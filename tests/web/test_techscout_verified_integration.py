@@ -254,6 +254,16 @@ def test_verified_budget_is_300_seconds_and_fast_budget_stays_120(tmp_path: Path
     assert 115 <= (fast.budget.deadline_at - datetime.now(timezone.utc)).total_seconds() <= 120
 
 
+def test_execution_budget_preserves_registry_absolute_deadline() -> None:
+    absolute_deadline = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    state = TechScoutRunEngine._initial_state(
+        "run:00000000-0000-4000-8000-000000000703",
+        TechScoutCreateRunRequest.model_validate(_body()),
+        deadline_at=absolute_deadline,
+    )
+    assert state.budget.deadline_at == absolute_deadline
+
+
 def test_cache_degradation_and_docker_unavailable_are_honest_terminal_results(tmp_path: Path) -> None:
     detail, report, evidence, _ = _run(tmp_path, _factory(cache=True))
     assert detail["status"] == "completed_with_limitations"

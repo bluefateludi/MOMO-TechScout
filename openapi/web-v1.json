@@ -2237,6 +2237,7 @@
               "completed_with_limitations",
               "failed",
               "cancelled",
+              "timed_out",
               "interrupted",
               "dead_letter"
             ],
@@ -2354,6 +2355,7 @@
               "completed_with_limitations",
               "failed",
               "cancelled",
+              "timed_out",
               "interrupted",
               "dead_letter"
             ],

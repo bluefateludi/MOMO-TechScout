@@ -1047,7 +1047,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "queued" | "running" | "completed" | "completed_with_limitations" | "failed" | "cancelled" | "interrupted" | "dead_letter";
+            status: "queued" | "running" | "completed" | "completed_with_limitations" | "failed" | "cancelled" | "timed_out" | "interrupted" | "dead_letter";
             /** Synthetic */
             synthetic: boolean;
         };
@@ -1086,7 +1086,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "queued" | "running" | "completed" | "completed_with_limitations" | "failed" | "cancelled" | "interrupted" | "dead_letter";
+            status: "queued" | "running" | "completed" | "completed_with_limitations" | "failed" | "cancelled" | "timed_out" | "interrupted" | "dead_letter";
             /** Synthetic */
             synthetic: boolean;
         };

@@ -1195,6 +1195,8 @@ class TechScoutRunEngine:
             self.registry.update_techscout_progress(
                 row.id, current, event_type=event_type, label=label,
                 skill=skill, tool=tool,
+                worker_id=row.worker_id, lease_token=row.lease_token,
+                fencing_token=row.fencing_token,
             )
 
         service_kwargs = {
@@ -1215,6 +1217,7 @@ class TechScoutRunEngine:
             core_id,
             row.request,
             verified_timeout_seconds=self.verified_timeout_seconds,
+            deadline_at=row.deadline_at,
         )
         checkpoint_path = run_dir / "harness-checkpoints.sqlite3"
         with SQLiteCheckpointAdapter(checkpoint_path) as checkpoints:
@@ -1341,6 +1344,7 @@ class TechScoutRunEngine:
         request: TechScoutCreateRunRequest,
         *,
         verified_timeout_seconds: int = 300,
+        deadline_at: datetime | None = None,
     ) -> ResearchState:
         candidates = tuple(
             Candidate(
@@ -1374,11 +1378,13 @@ class TechScoutRunEngine:
             run_id=core_id,
             request=research_request,
             budget=RunBudget(
-                deadline_at=utc_now()
-                + timedelta(
-                    seconds=verified_timeout_seconds
-                    if request.mode == "verified"
-                    else 120
+                deadline_at=deadline_at or (
+                    utc_now()
+                    + timedelta(
+                        seconds=verified_timeout_seconds
+                        if request.mode == "verified"
+                        else 120
+                    )
                 )
             ),
             stage=ResearchStage.NORMALIZE_REQUEST,
@@ -1565,6 +1571,7 @@ class TechScoutSingleRunExecutor:
         queue_capacity: int = 4,
         worker_id: str | None = None,
         embedded_worker: bool = True,
+        shutdown_grace_seconds: float = 5.0,
     ) -> None:
         self.registry = registry
         self.engine = TechScoutRunEngine(
@@ -1579,9 +1586,13 @@ class TechScoutSingleRunExecutor:
             registry, self.queue, self._process, worker_id=self.worker_id,
         )
         self.embedded_worker = embedded_worker
+        self.shutdown_grace_seconds = shutdown_grace_seconds
+        self.shutdown_complete = True
+        self.shutdown_limitation: str | None = None
         self._stop = False
         self._condition = threading.Condition()
         self._thread: threading.Thread | None = None
+        self._dispatch_thread: threading.Thread | None = None
         self._logger = logging.getLogger("paper_agent.web.techscout_execution")
 
     def start(self) -> None:
@@ -1589,12 +1600,20 @@ class TechScoutSingleRunExecutor:
         if not self.available:
             raise RuntimeError("TechScout queue is not ready")
         if not self.embedded_worker:
+            self._dispatch_thread = threading.Thread(
+                target=self._dispatch_work,
+                name="techscout-dispatcher",
+                daemon=True,
+            )
+            self._dispatch_thread.start()
             return
         for row in self.registry.active_techscout():
             if row.status == "running" and isinstance(self.queue, InMemoryRunQueue):
                 row = self.registry.record_techscout_failure(
                     row.id, kind=ErrorKind.TRANSIENT,
                     code="worker_interrupted", retryable=True,
+                    worker_id=row.worker_id, lease_token=row.lease_token,
+                    fencing_token=row.fencing_token,
                 )
             if row.status == "queued":
                 self.queue.enqueue(row.id)
@@ -1607,7 +1626,20 @@ class TechScoutSingleRunExecutor:
             self._stop = True
             self._condition.notify_all()
         if self._thread:
-            self._thread.join(timeout=305)
+            self._thread.join(timeout=self.shutdown_grace_seconds)
+            if self._thread.is_alive():
+                self.worker.handoff_active()
+                self.shutdown_complete = False
+                self.shutdown_limitation = "active_external_io_not_terminated"
+                self._logger.warning(
+                    "TechScout shutdown handed off an active lease",
+                    extra={"code": self.shutdown_limitation},
+                )
+        if self._dispatch_thread:
+            self._dispatch_thread.join(timeout=5)
+
+    def ready(self) -> bool:
+        return self.available and self.queue.ready()
 
     def notify(self) -> None:
         with self._condition:
@@ -1622,17 +1654,48 @@ class TechScoutSingleRunExecutor:
             with self._condition:
                 if self._stop:
                     return
-            for run_id in self.queue.reap_expired():
+            self._reconcile_dispatch()
+            for lease in self.queue.reap_expired():
                 try:
-                    self.registry.record_techscout_failure(
-                        run_id, kind=ErrorKind.TRANSIENT,
+                    owner = self.registry.get_techscout(lease.run_id)
+                    recovered = self.registry.record_techscout_failure(
+                        lease.run_id, kind=ErrorKind.TRANSIENT,
                         code="worker_interrupted", retryable=True,
+                        worker_id=lease.worker_id, lease_token=lease.token,
+                        fencing_token=owner.fencing_token,
                     )
+                    if recovered.status == "dead_letter":
+                        self.queue.dead_letter_run(
+                            lease.run_id, reason="worker_interrupted",
+                        )
+                    elif recovered.status != "queued":
+                        self.queue.discard(lease.run_id)
                 except WebError:
                     pass
             if not self.worker.process_once():
                 with self._condition:
                     self._condition.wait(timeout=0.25)
+
+    def _dispatch_work(self) -> None:
+        while True:
+            with self._condition:
+                if self._stop:
+                    return
+            self._reconcile_dispatch()
+            with self._condition:
+                self._condition.wait(timeout=0.25)
+
+    def _reconcile_dispatch(self) -> None:
+        for row in self.registry.active_techscout():
+            if row.status != "queued":
+                continue
+            try:
+                self.queue.enqueue(row.id)
+            except Exception:
+                self._logger.error(
+                    "TechScout queued delivery remains pending",
+                    extra={"run_id": row.id, "code": "dispatch_pending"},
+                )
 
     def _process(self, row: TechScoutRegistryRun) -> WorkResult:
         bundle, projection_path = self.engine.run(row)
@@ -1650,6 +1713,8 @@ class TechScoutSingleRunExecutor:
                 bundle.detail.status,
                 projection_path=projection_path,
                 progress=bundle.detail.progress,
+                worker_id=row.worker_id, lease_token=row.lease_token,
+                fencing_token=row.fencing_token,
             )
         except Exception:
             self._logger.error(
@@ -1660,4 +1725,6 @@ class TechScoutSingleRunExecutor:
             self.registry.terminal_techscout(
                 row.id, "failed", projection_path=projection_path,
                 progress=bundle.detail.progress,
+                worker_id=row.worker_id, lease_token=row.lease_token,
+                fencing_token=row.fencing_token,
             )

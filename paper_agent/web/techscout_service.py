@@ -51,31 +51,49 @@ class TechScoutProjectionService:
         idempotency_key: str | None = None,
         rate_subject: str = "local",
     ) -> TechScoutRunSummary:
-        if not self.executor.available:
+        if not self.executor.ready():
             raise WebError(503, "executor_unavailable")
-        if not self.executor.queue.allow(rate_subject):
+        try:
+            allowed = self.executor.queue.allow(rate_subject)
+        except Exception as error:
+            raise WebError(503, "execution_unavailable") from error
+        if not allowed:
             raise WebError(429, "rate_limited")
-        row, created = self.registry.admit_techscout_idempotent(
+        row, _ = self.registry.admit_techscout_idempotent(
             str(uuid.uuid4()), request, capacity=self.capacity,
             idempotency_key=idempotency_key,
         )
-        if created:
+        if row.status == "queued":
             try:
                 self.executor.submit(row.id)
             except QueueFullError as error:
-                self.registry.terminal_techscout(
-                    row.id, "failed", projection_path=None,
-                    progress=row.progress.model_copy(update={"stage": "terminal"}),
-                )
+                self._record_dispatch_pending(row.id, "queue_full")
                 raise WebError(503, "queue_full") from error
+            except Exception as error:
+                self._record_dispatch_pending(row.id, "queue_unavailable")
+                raise WebError(503, "execution_unavailable") from error
         return self._summary(row)
+
+    def _record_dispatch_pending(self, run_id: str, reason: str) -> None:
+        try:
+            self.registry.append_event(
+                run_id,
+                event_type="recovery",
+                stage="plan",
+                status="queued",
+                label=f"Dispatch pending: {reason}.",
+            )
+        except Exception:
+            # The queued Registry row is the durable outbox. Audit failure must not
+            # hide the original queue failure or make the API claim admission worked.
+            pass
 
     def cancel(self, run_id: str) -> TechScoutRunDetail:
         self.registry.request_cancel_techscout(run_id)
         return self.detail(run_id)
 
     def ready(self) -> bool:
-        return self.executor.available and self.registry.ready()
+        return self.executor.ready() and self.registry.ready()
 
     def list(self) -> TechScoutRunList:
         live = [self._summary(row) for row in self.registry.list_techscout()]

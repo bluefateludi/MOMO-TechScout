@@ -31,7 +31,9 @@ class RunQueue(Protocol):
     def ack(self, lease: Lease) -> bool: ...
     def retry(self, lease: Lease) -> bool: ...
     def dead_letter(self, lease: Lease, *, reason: str) -> bool: ...
-    def reap_expired(self, *, now: datetime | None = None) -> list[str]: ...
+    def reap_expired(self, *, now: datetime | None = None) -> list[Lease]: ...
+    def discard(self, run_id: str) -> None: ...
+    def dead_letter_run(self, run_id: str, *, reason: str) -> None: ...
     def allow(self, subject: str, *, now: datetime | None = None) -> bool: ...
     def ready(self) -> bool: ...
 
@@ -125,7 +127,7 @@ class InMemoryRunQueue:
             self._dead.append((lease.run_id, reason))
             return True
 
-    def reap_expired(self, *, now: datetime | None = None) -> list[str]:
+    def reap_expired(self, *, now: datetime | None = None) -> list[Lease]:
         current = _now(now)
         with self._lock:
             expired = sorted(
@@ -135,7 +137,19 @@ class InMemoryRunQueue:
             for lease in expired:
                 self._leases.pop(lease.run_id, None)
                 self._pending.append(lease.run_id)
-            return [lease.run_id for lease in expired]
+            return expired
+
+    def discard(self, run_id: str) -> None:
+        with self._lock:
+            self._pending = deque(item for item in self._pending if item != run_id)
+            self._leases.pop(run_id, None)
+            self._known.discard(run_id)
+
+    def dead_letter_run(self, run_id: str, *, reason: str) -> None:
+        self.discard(run_id)
+        with self._lock:
+            if (run_id, reason) not in self._dead:
+                self._dead.append((run_id, reason))
 
     def allow(self, subject: str, *, now: datetime | None = None) -> bool:
         current = _now(now)
@@ -185,7 +199,17 @@ class RedisRunQueue:
             from redis import Redis
         except ImportError as exc:
             raise RuntimeError("Redis worker mode requires the 'redis' package") from exc
-        return cls(Redis.from_url(url, decode_responses=True), **kwargs)
+        return cls(
+            Redis.from_url(
+                url,
+                decode_responses=True,
+                socket_connect_timeout=2.0,
+                socket_timeout=2.0,
+                retry_on_timeout=False,
+                health_check_interval=15,
+            ),
+            **kwargs,
+        )
 
     def _key(self, suffix: str) -> str:
         return f"{self.namespace}:{suffix}"
@@ -272,11 +296,14 @@ class RedisRunQueue:
         )
         return bool(result)
 
-    def reap_expired(self, *, now: datetime | None = None) -> list[str]:
+    def reap_expired(self, *, now: datetime | None = None) -> list[Lease]:
         current_ms = int(_now(now).timestamp() * 1000)
         candidates = self.client.zrangebyscore(self._key("leases"), "-inf", current_ms)
-        requeued: list[str] = []
+        requeued: list[Lease] = []
         for run_id in candidates:
+            token = self.client.hget(self._key("tokens"), run_id)
+            worker_id = self.client.hget(self._key("workers"), run_id)
+            score = self.client.zscore(self._key("leases"), run_id)
             moved = self.client.eval(
                 """
                 local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
@@ -292,9 +319,39 @@ class RedisRunQueue:
                 self._key("leases"), self._key("processing"), self._key("tokens"),
                 self._key("workers"), self._key("pending"), run_id, current_ms,
             )
-            if moved:
-                requeued.append(str(run_id))
+            if moved and token and worker_id and score is not None:
+                requeued.append(Lease(
+                    str(run_id), str(token), str(worker_id),
+                    datetime.fromtimestamp(float(score) / 1000, tz=timezone.utc),
+                ))
         return requeued
+
+    def discard(self, run_id: str) -> None:
+        self.client.eval(
+            """
+            redis.call('LREM', KEYS[1], 0, ARGV[1])
+            redis.call('LREM', KEYS[2], 0, ARGV[1])
+            redis.call('ZREM', KEYS[3], ARGV[1])
+            redis.call('HDEL', KEYS[4], ARGV[1])
+            redis.call('HDEL', KEYS[5], ARGV[1])
+            redis.call('SREM', KEYS[6], ARGV[1])
+            return 1
+            """,
+            6,
+            self._key("pending"), self._key("processing"), self._key("leases"),
+            self._key("tokens"), self._key("workers"), self._key("known"), run_id,
+        )
+
+    def dead_letter_run(self, run_id: str, *, reason: str) -> None:
+        self.discard(run_id)
+        self.client.eval(
+            """
+            redis.call('RPUSH', KEYS[1], ARGV[1])
+            redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+            return 1
+            """,
+            2, self._key("dead"), self._key("dead_reasons"), run_id, reason,
+        )
 
     def allow(self, subject: str, *, now: datetime | None = None) -> bool:
         current_ms = int(_now(now).timestamp() * 1000)

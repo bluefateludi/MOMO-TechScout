@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from paper_agent.web.context import execution_context
-from paper_agent.web.errors import ConflictError, ErrorKind, classify_exception
+from paper_agent.web.errors import ConflictError, ErrorKind, WebError, classify_exception
 from paper_agent.web.registry import RunRegistry
 from paper_agent.web.structured_logging import JsonFormatter, RedactingContextFilter
-from paper_agent.web.task_queue import InMemoryRunQueue, QueueFullError
+from paper_agent.web.task_queue import InMemoryRunQueue, QueueFullError, RedisRunQueue
+from paper_agent.web.techscout_execution import TechScoutSingleRunExecutor
+from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.worker import TechScoutWorker, WorkResult
 from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
 
@@ -62,7 +66,8 @@ def test_registry_claim_cancel_and_terminal_transitions_are_atomic(tmp_path):
     registry = RunRegistry(tmp_path / "registry.sqlite3")
     run_id = "00000000-0000-4000-8000-000000000101"
     registry.admit_techscout(run_id, REQUEST, 4)
-    assert registry.claim_techscout(run_id, worker_id="worker-a") is not None
+    claimed = registry.claim_techscout(run_id, worker_id="worker-a")
+    assert claimed is not None
     assert registry.claim_techscout(run_id, worker_id="worker-b") is None
 
     running = registry.request_cancel_techscout(run_id)
@@ -73,6 +78,8 @@ def test_registry_claim_cancel_and_terminal_transitions_are_atomic(tmp_path):
         "cancelled",
         projection_path=None,
         progress=running.progress.model_copy(update={"stage": "terminal"}),
+        worker_id=claimed.worker_id, lease_token=claimed.lease_token,
+        fencing_token=claimed.fencing_token,
     )
     assert terminal.status == "cancelled"
     with pytest.raises(ConflictError):
@@ -93,7 +100,8 @@ def test_in_memory_queue_enforces_capacity_rate_limit_lease_reaping_and_dlq():
     assert queue.allow("client-a", now=now) is False
     assert queue.heartbeat(first, lease_seconds=10, now=now + timedelta(seconds=5))
     assert queue.reap_expired(now=now + timedelta(seconds=14)) == []
-    assert queue.reap_expired(now=now + timedelta(seconds=16)) == ["run-1"]
+    expired = queue.reap_expired(now=now + timedelta(seconds=16))
+    assert [lease.run_id for lease in expired] == ["run-1"]
 
     retried = queue.reserve("worker-b", lease_seconds=10, now=now + timedelta(seconds=16))
     assert retried is not None and retried.run_id == "run-2"
@@ -197,3 +205,386 @@ def test_worker_dead_letters_permanent_failure_without_leaking_message(tmp_path)
     assert failed.error_kind is ErrorKind.PERMANENT
     assert failed.error_code == "execution_failed"
     assert queue.dead_letters() == [(run_id, "execution_failed")]
+
+
+def test_stale_worker_cannot_terminalize_after_new_fenced_claim(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000301"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    old = registry.claim_techscout(
+        run_id, worker_id="worker-old", lease_token="lease-old",
+    )
+    assert old is not None
+    retried = registry.record_techscout_failure(
+        run_id, kind=ErrorKind.TRANSIENT, code="transient_execution_failure",
+        retryable=True, worker_id=old.worker_id, lease_token=old.lease_token,
+        fencing_token=old.fencing_token,
+    )
+    assert retried.status == "queued"
+    current = registry.claim_techscout(
+        run_id, worker_id="worker-new", lease_token="lease-new",
+    )
+    assert current is not None
+
+    with pytest.raises(ConflictError):
+        registry.terminal_techscout(
+            run_id, "completed", projection_path="stale.json",
+            progress=old.progress.model_copy(update={"stage": "terminal"}),
+            worker_id=old.worker_id, lease_token=old.lease_token,
+            fencing_token=old.fencing_token,
+        )
+    with pytest.raises(ConflictError):
+        registry.record_techscout_failure(
+            run_id, kind=ErrorKind.PERMANENT, code="stale_failure",
+            retryable=False, worker_id=old.worker_id,
+            lease_token=old.lease_token, fencing_token=old.fencing_token,
+        )
+    still_owned = registry.get_techscout(run_id)
+    assert still_owned.status == "running"
+    assert still_owned.worker_id == "worker-new"
+
+
+def test_stale_worker_heartbeat_cannot_refresh_new_fenced_owner(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000308"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    old = registry.claim_techscout(
+        run_id, worker_id="worker-old", lease_token="lease-old",
+    )
+    assert old is not None
+    registry.record_techscout_failure(
+        run_id, kind=ErrorKind.TRANSIENT, code="retry", retryable=True,
+        worker_id=old.worker_id, lease_token=old.lease_token,
+        fencing_token=old.fencing_token,
+    )
+    current = registry.claim_techscout(
+        run_id, worker_id="worker-new", lease_token="lease-new",
+    )
+    assert current is not None
+    assert registry.heartbeat_techscout(
+        run_id, worker_id=old.worker_id, lease_token=old.lease_token,
+        fencing_token=old.fencing_token,
+    ) is False
+    assert registry.heartbeat_techscout(
+        run_id, worker_id=current.worker_id, lease_token=current.lease_token,
+        fencing_token=current.fencing_token,
+    ) is True
+
+
+def test_terminal_transaction_prioritizes_cancel_over_success(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000302"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    owner = registry.claim_techscout(
+        run_id, worker_id="worker-a", lease_token="lease-a",
+    )
+    assert owner is not None
+    registry.request_cancel_techscout(run_id)
+    result = registry.terminal_techscout(
+        run_id, "completed", projection_path="success.json",
+        progress=owner.progress.model_copy(update={"stage": "research"}),
+        worker_id=owner.worker_id, lease_token=owner.lease_token,
+        fencing_token=owner.fencing_token,
+    )
+    assert result.status == "cancelled"
+    assert result.stage == "terminal"
+    assert result.progress.stage == "terminal"
+    assert result.projection_path is None
+
+
+def test_terminal_transaction_prioritizes_deadline_over_success(tmp_path, monkeypatch):
+    import paper_agent.web.registry as registry_module
+
+    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry_module, "utc_now", lambda: now)
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000303"
+    registry.admit_techscout_idempotent(
+        run_id, REQUEST, capacity=4, deadline_seconds=1,
+    )
+    owner = registry.claim_techscout(
+        run_id, worker_id="worker-a", lease_token="lease-a",
+    )
+    assert owner is not None
+    monkeypatch.setattr(
+        registry_module, "utc_now", lambda: now + timedelta(seconds=2),
+    )
+    result = registry.terminal_techscout(
+        run_id, "completed", projection_path="late-success.json",
+        progress=owner.progress,
+        worker_id=owner.worker_id, lease_token=owner.lease_token,
+        fencing_token=owner.fencing_token,
+    )
+    assert result.status == "timed_out"
+    assert result.error_kind is ErrorKind.DEADLINE
+    assert result.projection_path is None
+
+
+def test_stale_progress_cannot_reopen_terminal_stage(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000306"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    owner = registry.claim_techscout(
+        run_id, worker_id="worker-a", lease_token="lease-a",
+    )
+    assert owner is not None
+    terminal = registry.terminal_techscout(
+        run_id, "completed", projection_path="result.json",
+        progress=owner.progress,
+        worker_id=owner.worker_id, lease_token=owner.lease_token,
+        fencing_token=owner.fencing_token,
+    )
+    assert terminal.progress.stage == "terminal"
+    with pytest.raises(ConflictError):
+        registry.update_techscout_progress(
+            run_id, owner.progress.model_copy(update={"stage": "research"}),
+            worker_id=owner.worker_id, lease_token=owner.lease_token,
+            fencing_token=owner.fencing_token,
+        )
+    unchanged = registry.get_techscout(run_id)
+    assert unchanged.stage == "terminal"
+    assert unchanged.progress.stage == "terminal"
+
+
+def test_cancelled_processor_failure_is_acked_not_dead_lettered(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = InMemoryRunQueue(capacity=4)
+    run_id = "00000000-0000-4000-8000-000000000304"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    queue.enqueue(run_id)
+
+    def process(_claimed):
+        registry.request_cancel_techscout(run_id)
+        raise ValueError("cancelled operation returned an error")
+
+    worker = TechScoutWorker(registry, queue, process, worker_id="worker-a")
+    assert worker.process_once() is True
+    assert registry.get_techscout(run_id).status == "cancelled"
+    assert queue.dead_letters() == []
+    assert worker.process_once() is False
+
+
+def test_expired_processor_failure_is_timed_out_not_dead_lettered(
+    tmp_path, monkeypatch,
+):
+    import paper_agent.web.registry as registry_module
+
+    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry_module, "utc_now", lambda: now)
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = InMemoryRunQueue(capacity=4)
+    run_id = "00000000-0000-4000-8000-000000000309"
+    registry.admit_techscout_idempotent(
+        run_id, REQUEST, capacity=4, deadline_seconds=1,
+    )
+    queue.enqueue(run_id)
+
+    def process(_claimed):
+        monkeypatch.setattr(
+            registry_module, "utc_now", lambda: now + timedelta(seconds=2),
+        )
+        raise TimeoutError("operation exceeded its absolute budget")
+
+    worker = TechScoutWorker(registry, queue, process, worker_id="worker-a")
+    assert worker.process_once() is True
+    assert registry.get_techscout(run_id).status == "timed_out"
+    assert queue.dead_letters() == []
+
+
+def test_duplicate_delivery_for_running_owner_is_acked_without_retry_loop(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = InMemoryRunQueue(capacity=2)
+    run_id = "00000000-0000-4000-8000-000000000305"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    queue.enqueue(run_id)
+    original = queue.reserve("worker-a", lease_seconds=30)
+    assert original is not None
+    assert registry.claim_techscout(
+        run_id, worker_id="worker-a", lease_token=original.token,
+    ) is not None
+    assert queue.retry(original)
+
+    duplicate = TechScoutWorker(
+        registry, queue, lambda _row: pytest.fail("duplicate must not execute"),
+        worker_id="worker-b",
+    )
+    assert duplicate.process_once() is True
+    assert duplicate.process_once() is False
+    assert registry.get_techscout(run_id).worker_id == "worker-a"
+
+
+class _PingClient:
+    def __init__(self) -> None:
+        self.healthy = True
+
+    def ping(self):
+        if not self.healthy:
+            raise ConnectionError("redis unavailable")
+        return True
+
+
+def test_executor_readiness_rechecks_redis_and_fails_closed(tmp_path):
+    client = _PingClient()
+    queue = RedisRunQueue(client)
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    executor = TechScoutSingleRunExecutor(
+        registry, tmp_path / "outputs", queue=queue, embedded_worker=False,
+    )
+    executor.start()
+    assert executor.ready() is True
+    client.healthy = False
+    assert executor.ready() is False
+    executor.close()
+
+
+def test_redis_factory_sets_explicit_network_timeouts(monkeypatch):
+    captured = {}
+
+    def from_url(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return _PingClient()
+
+    import redis
+
+    monkeypatch.setattr(redis.Redis, "from_url", from_url)
+    RedisRunQueue.from_url("redis://example.test:6379/0")
+    assert captured["socket_connect_timeout"] == 2.0
+    assert captured["socket_timeout"] == 2.0
+    assert captured["retry_on_timeout"] is False
+
+
+class _FailOnceQueue(InMemoryRunQueue):
+    def __init__(self):
+        super().__init__(capacity=4)
+        self.failed = False
+
+    def enqueue(self, run_id, *, now=None):
+        if not self.failed:
+            self.failed = True
+            raise ConnectionError("redis dropped")
+        return super().enqueue(run_id, now=now)
+
+
+class _FailAllowQueue(InMemoryRunQueue):
+    def allow(self, subject, *, now=None):
+        raise ConnectionError("redis dropped")
+
+
+def test_rate_limit_backend_failure_is_fail_closed_before_admission(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    executor = TechScoutSingleRunExecutor(
+        registry,
+        tmp_path / "outputs",
+        queue=_FailAllowQueue(capacity=4),
+        embedded_worker=False,
+    )
+    executor.start()
+    service = TechScoutProjectionService(
+        registry, executor, tmp_path / "outputs", capacity=4,
+    )
+
+    with pytest.raises(WebError) as raised:
+        service.create(REQUEST, idempotency_key="rate-limit-failure")
+
+    assert raised.value.code == "execution_unavailable"
+    assert registry.list_techscout() == []
+    executor.close()
+
+
+def test_idempotent_retry_redelivers_registry_outbox_after_enqueue_failure(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = _FailOnceQueue()
+    executor = TechScoutSingleRunExecutor(
+        registry, tmp_path / "outputs", queue=queue, embedded_worker=False,
+    )
+    executor.start()
+    service = TechScoutProjectionService(
+        registry, executor, tmp_path / "outputs", capacity=4,
+    )
+    with pytest.raises(WebError) as raised:
+        service.create(REQUEST, idempotency_key="outbox-1")
+    assert raised.value.code == "execution_unavailable"
+    queued = registry.list_techscout()[0]
+    assert queued.status == "queued"
+    events, _ = registry.list_events(queued.id, after_sequence=0, limit=20)
+    assert any(event.label == "Dispatch pending: queue_unavailable." for event in events)
+
+    repeated = service.create(REQUEST, idempotency_key="outbox-1")
+    assert str(repeated.id) == queued.id
+    delivered = queue.reserve("worker-a", lease_seconds=30)
+    assert delivered is not None and delivered.run_id == queued.id
+    executor.close()
+
+
+class _RejectHeartbeatQueue(InMemoryRunQueue):
+    def __init__(self):
+        super().__init__(capacity=2)
+        self.rejected = threading.Event()
+
+    def heartbeat(self, lease, *, lease_seconds, now=None):
+        self.rejected.set()
+        return False
+
+
+def test_lost_queue_lease_fences_processor_before_terminal_commit(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = _RejectHeartbeatQueue()
+    run_id = "00000000-0000-4000-8000-000000000310"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    queue.enqueue(run_id)
+
+    def process(row):
+        assert queue.rejected.wait(timeout=2)
+        for _ in range(100):
+            if registry.get_techscout(run_id).status != "running":
+                break
+            time.sleep(0.005)
+        return WorkResult(
+            status="completed", projection_path="stale-success.json",
+            progress=row.progress,
+        )
+
+    worker = TechScoutWorker(
+        registry, queue, process, worker_id="worker-a",
+        lease_seconds=1, heartbeat_seconds=0.01,
+    )
+    assert worker.process_once() is True
+    result = registry.get_techscout(run_id)
+    assert result.status == "queued"
+    assert result.projection_path is None
+
+
+def test_shutdown_hands_off_active_lease_without_claiming_io_was_terminated(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = InMemoryRunQueue(capacity=4)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_processor(row):
+        started.set()
+        release.wait(timeout=5)
+        return WorkResult(
+            status="completed", projection_path="late.json",
+            progress=row.progress,
+        )
+
+    executor = TechScoutSingleRunExecutor(
+        registry, tmp_path / "outputs", queue=queue,
+        shutdown_grace_seconds=0.05,
+    )
+    executor.worker = TechScoutWorker(
+        registry, queue, blocking_processor, worker_id=executor.worker_id,
+    )
+    executor.start()
+    row = registry.admit_techscout(
+        "00000000-0000-4000-8000-000000000307", REQUEST, 4,
+    )
+    executor.submit(row.id)
+    assert started.wait(timeout=2)
+
+    executor.close()
+    handed_off = registry.get_techscout(row.id)
+    assert handed_off.status == "queued"
+    assert executor.shutdown_complete is False
+    assert executor.shutdown_limitation == "active_external_io_not_terminated"
+    release.set()

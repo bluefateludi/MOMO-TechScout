@@ -10,7 +10,7 @@ from paper_agent.modeling import StrictModel
 
 TechScoutStatus = Literal[
     "queued", "running", "completed", "completed_with_limitations", "failed",
-    "cancelled", "interrupted", "dead_letter",
+    "cancelled", "timed_out", "interrupted", "dead_letter",
 ]
 TechScoutStage = Literal["plan", "research", "verify", "decide", "terminal"]
 
