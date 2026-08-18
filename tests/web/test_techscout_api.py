@@ -72,6 +72,39 @@ def test_v2_create_enters_real_harness_queue(tmp_path):
         assert response.json()["synthetic"] is True
 
 
+def test_v2_idempotency_context_health_and_readiness(tmp_path):
+    body = {
+        "question": "Choose a local vector store",
+        "project_context": "A Python local RAG application",
+        "environment": {
+            "python_version": "3.11", "operating_system": "Linux",
+            "deployment": "single node",
+        },
+        "hard_constraints": ["local persistence"],
+        "candidates": [{"name": "Chroma"}],
+        "mode": "fast",
+    }
+    with _client(tmp_path) as client:
+        live = client.get("/health/live")
+        ready = client.get("/health/ready")
+        assert live.json() == {"status": "ok"}
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+
+        headers = {"Idempotency-Key": "submission-1", "X-Request-ID": "req-safe-1"}
+        first = client.post("/api/v2/runs", json=body, headers=headers)
+        repeated = client.post("/api/v2/runs", json=body, headers=headers)
+        assert repeated.json()["id"] == first.json()["id"]
+        assert first.headers["x-request-id"] == "req-safe-1"
+        assert repeated.headers["x-request-id"] == "req-safe-1"
+
+        changed = {**body, "question": "Choose another vector store"}
+        conflict = client.post("/api/v2/runs", json=changed, headers=headers)
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "idempotency_conflict"
+        assert conflict.headers["x-request-id"] == "req-safe-1"
+
+
 def test_v2_trace_does_not_project_a_legacy_registry_run(tmp_path):
     with _client(tmp_path) as client:
         legacy_id = "00000000-0000-4000-8000-000000000099"

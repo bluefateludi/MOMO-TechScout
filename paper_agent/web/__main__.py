@@ -14,6 +14,8 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=Path("outputs"))
     parser.add_argument("--dev-origin", action="append", default=[], help="Exact development browser origin; may be repeated")
     parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--redis-url", help="Redis URL; requires a separate techscout-worker process")
+    parser.add_argument("--queue-capacity", type=int, default=100)
     args = parser.parse_args()
     try:
         run_web_server(
@@ -23,6 +25,8 @@ def main() -> None:
             output_root=args.output_root,
             dev_origins=tuple(args.dev_origin),
             allow_network=args.allow_network,
+            redis_url=args.redis_url,
+            queue_capacity=args.queue_capacity,
         )
     except ValueError as error:
         parser.error(str(error))

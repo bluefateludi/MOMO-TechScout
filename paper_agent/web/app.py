@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,8 @@ from paper_agent.web.api_models import ErrorBody, ErrorResponse
 from paper_agent.web.artifacts import ArtifactReader
 from paper_agent.web.demo import DEMO_ROOT, seed_bundled_demo
 from paper_agent.web.errors import WebError
+from paper_agent.web.context import execution_context
+from paper_agent.web.structured_logging import configure_structured_logging
 from paper_agent.web.execution import PipelineRunner, SingleRunExecutor
 from paper_agent.web.registry import RunRegistry
 from paper_agent.web.routes.runs import router
@@ -24,6 +27,7 @@ from paper_agent.web.service import RunService
 from paper_agent.web.routes.techscout import router as techscout_router
 from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.techscout_execution import StageServicesFactory, TechScoutSingleRunExecutor
+from paper_agent.web.task_queue import RunQueue
 from paper_agent.web.verified_composition import make_verified_services_factory
 
 
@@ -43,6 +47,8 @@ def create_app(
     runner: PipelineRunner | None = None,
     settings_loader: Callable[[], Settings] = load_settings,
     verified_services_factory: StageServicesFactory | None = None,
+    techscout_queue: RunQueue | None = None,
+    embedded_techscout_worker: bool = True,
 ) -> FastAPI:
     if "*" in allowed_origins:
         raise ValueError("allowed_origins must contain exact origins, never '*'")
@@ -50,6 +56,7 @@ def create_app(
     state_root = state_root.resolve()
     output_root = output_root.resolve()
     registry = RunRegistry(state_root / "run-registry.sqlite3")
+    configure_structured_logging(logging.getLogger("paper_agent.web"))
     artifacts = ArtifactReader(output_root, demo_root)
     seed_bundled_demo(registry, artifacts)
     executor = SingleRunExecutor(
@@ -66,6 +73,9 @@ def create_app(
         registry,
         output_root,
         verified_services_factory=verified_services_factory,
+        queue=techscout_queue,
+        queue_capacity=queue_capacity,
+        embedded_worker=embedded_techscout_worker,
     )
 
     @asynccontextmanager
@@ -88,17 +98,28 @@ def create_app(
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        origin = request.headers.get("origin")
-        same_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
-        if origin and origin.rstrip("/") not in {same_origin, *allowed_origins}:
-            return _error(
-                "origin_not_allowed", "The request origin is not allowed.", status=403,
-            )
-        if request.method == "POST" and request.url.path in {"/api/v1/runs", "/api/v2/runs"}:
-            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if content_type != "application/json" or len(await request.body()) > 16 * 1024:
-                return _error("validation_error", "The request did not satisfy the API contract.", status=422)
-        response = await call_next(request)
+        supplied_request_id = request.headers.get("x-request-id", "")
+        request_id = (
+            supplied_request_id
+            if re.fullmatch(r"[A-Za-z0-9._-]{1,64}", supplied_request_id)
+            else secrets.token_hex(12)
+        )
+        with execution_context(request_id=request_id):
+            origin = request.headers.get("origin")
+            same_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+            if origin and origin.rstrip("/") not in {same_origin, *allowed_origins}:
+                response = _error(
+                    "origin_not_allowed", "The request origin is not allowed.", status=403,
+                )
+            elif request.method == "POST" and request.url.path in {"/api/v1/runs", "/api/v2/runs"}:
+                content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type != "application/json" or len(await request.body()) > 16 * 1024:
+                    response = _error("validation_error", "The request did not satisfy the API contract.", status=422)
+                else:
+                    response = await call_next(request)
+            else:
+                response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
             response.headers["X-Content-Type-Options"] = "nosniff"
@@ -129,6 +150,23 @@ def create_app(
         correlation_id = secrets.token_hex(8)
         logging.getLogger("paper_agent.web").error("unexpected API error", extra={"correlation_id": correlation_id})
         return _error("internal_error", "The request could not be completed.", {"correlation_id": correlation_id}, 500)
+
+    @app.get("/health/live", include_in_schema=False)
+    def health_live() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/health/ready", include_in_schema=False)
+    def health_ready() -> JSONResponse:
+        ready = (
+            app.state.run_service.executor.available
+            and app.state.run_service.registry.ready()
+            and app.state.techscout_service.ready()
+        )
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={"status": "ready" if ready else "not_ready"},
+            headers={"Cache-Control": "no-store"},
+        )
 
     resolved_web_dist = web_dist.resolve() if web_dist else Path(__file__).parents[2] / "web" / "dist"
     if resolved_web_dist.is_dir() and (resolved_web_dist / "index.html").is_file():

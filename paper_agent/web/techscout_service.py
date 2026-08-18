@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 
 from paper_agent.web.errors import WebError
+from paper_agent.web.task_queue import QueueFullError
 from paper_agent.web.event_cursor import decode_event_cursor, encode_event_cursor
 from paper_agent.web.registry import RunRegistry, TechScoutRegistryRun
 from paper_agent.web.techscout_api_models import (
@@ -43,12 +44,38 @@ class TechScoutProjectionService:
         self.output_root = output_root.resolve()
         self.capacity = capacity
 
-    def create(self, request: TechScoutCreateRunRequest) -> TechScoutRunSummary:
+    def create(
+        self,
+        request: TechScoutCreateRunRequest,
+        *,
+        idempotency_key: str | None = None,
+        rate_subject: str = "local",
+    ) -> TechScoutRunSummary:
         if not self.executor.available:
             raise WebError(503, "executor_unavailable")
-        row = self.registry.admit_techscout(str(uuid.uuid4()), request, self.capacity)
-        self.executor.notify()
+        if not self.executor.queue.allow(rate_subject):
+            raise WebError(429, "rate_limited")
+        row, created = self.registry.admit_techscout_idempotent(
+            str(uuid.uuid4()), request, capacity=self.capacity,
+            idempotency_key=idempotency_key,
+        )
+        if created:
+            try:
+                self.executor.submit(row.id)
+            except QueueFullError as error:
+                self.registry.terminal_techscout(
+                    row.id, "failed", projection_path=None,
+                    progress=row.progress.model_copy(update={"stage": "terminal"}),
+                )
+                raise WebError(503, "queue_full") from error
         return self._summary(row)
+
+    def cancel(self, run_id: str) -> TechScoutRunDetail:
+        self.registry.request_cancel_techscout(run_id)
+        return self.detail(run_id)
+
+    def ready(self) -> bool:
+        return self.executor.available and self.registry.ready()
 
     def list(self) -> TechScoutRunList:
         live = [self._summary(row) for row in self.registry.list_techscout()]

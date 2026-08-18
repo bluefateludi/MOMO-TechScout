@@ -12,6 +12,7 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -75,6 +76,9 @@ from paper_agent.techscout.tools.contracts import SearchOutput, SmokeTestOutput
 from paper_agent.techscout.tools.runtime import PolicyToolRuntime, StdioMcpRuntime
 from paper_agent.techscout.validation import REQUIRED_TERMINAL_ARTIFACTS, ValidationGate, ValidationInput
 from paper_agent.web.registry import RunRegistry, TechScoutRegistryRun, utc_now
+from paper_agent.web.errors import ErrorKind, WebError
+from paper_agent.web.task_queue import InMemoryRunQueue, RunQueue
+from paper_agent.web.worker import TechScoutWorker, WorkResult
 from paper_agent.web.techscout_api_models import (
     TechScoutApprovalProjection,
     TechScoutCandidateProjection,
@@ -1557,6 +1561,10 @@ class TechScoutSingleRunExecutor:
         output_root: Path,
         *,
         verified_services_factory: StageServicesFactory | None = None,
+        queue: RunQueue | None = None,
+        queue_capacity: int = 4,
+        worker_id: str | None = None,
+        embedded_worker: bool = True,
     ) -> None:
         self.registry = registry
         self.engine = TechScoutRunEngine(
@@ -1565,15 +1573,31 @@ class TechScoutSingleRunExecutor:
             verified_services_factory=verified_services_factory,
         )
         self.available = False
+        self.queue = queue or InMemoryRunQueue(capacity=queue_capacity)
+        self.worker_id = worker_id or f"local-{uuid.uuid4().hex[:12]}"
+        self.worker = TechScoutWorker(
+            registry, self.queue, self._process, worker_id=self.worker_id,
+        )
+        self.embedded_worker = embedded_worker
         self._stop = False
         self._condition = threading.Condition()
         self._thread: threading.Thread | None = None
         self._logger = logging.getLogger("paper_agent.web.techscout_execution")
 
     def start(self) -> None:
+        self.available = self.queue.ready()
+        if not self.available:
+            raise RuntimeError("TechScout queue is not ready")
+        if not self.embedded_worker:
+            return
         for row in self.registry.active_techscout():
-            self.registry.requeue_techscout(row.id)
-        self.available = True
+            if row.status == "running" and isinstance(self.queue, InMemoryRunQueue):
+                row = self.registry.record_techscout_failure(
+                    row.id, kind=ErrorKind.TRANSIENT,
+                    code="worker_interrupted", retryable=True,
+                )
+            if row.status == "queued":
+                self.queue.enqueue(row.id)
         self._thread = threading.Thread(target=self._work, name="techscout-runner", daemon=True)
         self._thread.start()
 
@@ -1583,36 +1607,40 @@ class TechScoutSingleRunExecutor:
             self._stop = True
             self._condition.notify_all()
         if self._thread:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=305)
 
     def notify(self) -> None:
         with self._condition:
             self._condition.notify()
+
+    def submit(self, run_id: str) -> None:
+        self.queue.enqueue(run_id)
+        self.notify()
 
     def _work(self) -> None:
         while True:
             with self._condition:
                 if self._stop:
                     return
-            row = self.registry.claim_oldest_techscout()
-            if row is None:
+            for run_id in self.queue.reap_expired():
+                try:
+                    self.registry.record_techscout_failure(
+                        run_id, kind=ErrorKind.TRANSIENT,
+                        code="worker_interrupted", retryable=True,
+                    )
+                except WebError:
+                    pass
+            if not self.worker.process_once():
                 with self._condition:
                     self._condition.wait(timeout=0.25)
-                continue
-            try:
-                self._execute(row)
-            except Exception:
-                self._logger.error(
-                    "TechScout worker isolated a failed terminalization",
-                    extra={"run_id": row.id, "code": "terminalization_failed"},
-                )
-                try:
-                    self.registry.fail_stuck_techscout(row.id)
-                except Exception:
-                    self._logger.error(
-                        "TechScout queue release failed",
-                        extra={"run_id": row.id, "code": "queue_release_failed"},
-                    )
+
+    def _process(self, row: TechScoutRegistryRun) -> WorkResult:
+        bundle, projection_path = self.engine.run(row)
+        return WorkResult(
+            status=bundle.detail.status,
+            projection_path=projection_path,
+            progress=bundle.detail.progress,
+        )
 
     def _execute(self, row: TechScoutRegistryRun) -> None:
         try:
