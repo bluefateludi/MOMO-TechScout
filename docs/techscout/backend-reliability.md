@@ -70,6 +70,14 @@ recovery in the Registry. Transient connection/timeout failures receive at most
 one retry by default. Permanent or exhausted failures become `dead_letter`; raw
 exception messages are neither persisted nor returned.
 
+Queue commands are supervised by the executor loop. A command failure marks the
+executor unavailable immediately, is logged only as the safe
+`queue_unavailable` code, and receives bounded exponential backoff. A successful
+queue cycle restores readiness. Five consecutive failures stop the consumer;
+the standalone worker then exits non-zero so its process supervisor can restart
+it, while an embedded API process remains live but reports not-ready. Readiness
+also requires the expected runner/dispatcher thread to still be alive.
+
 `SIGINT` and `SIGTERM` stop new reservations and wait for a bounded grace period.
 If external I/O is still blocked, shutdown fences and hands off the active lease
 before returning and exposes `active_external_io_not_terminated` as a runtime

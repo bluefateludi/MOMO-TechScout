@@ -144,15 +144,33 @@ class TechScoutWorker:
                 lease_token=row.lease_token, fencing_token=row.fencing_token,
             )
         except ConflictError:
-            self.queue.ack(lease)
+            self._handoff_settle(lease, "ack")
             return False
         if recovered.status == "queued":
-            self.queue.retry(lease)
+            self._handoff_settle(lease, "retry")
         elif recovered.status == "dead_letter":
-            self.queue.dead_letter(lease, reason="shutdown_interrupted")
+            self._handoff_settle(
+                lease, "dead_letter", reason="shutdown_interrupted",
+            )
         else:
-            self.queue.ack(lease)
+            self._handoff_settle(lease, "ack")
         return False
+
+    def _handoff_settle(
+        self, lease: Lease, action: str, *, reason: str | None = None,
+    ) -> None:
+        try:
+            if action == "retry":
+                self.queue.retry(lease)
+            elif action == "dead_letter":
+                self.queue.dead_letter(lease, reason=reason or "worker_interrupted")
+            else:
+                self.queue.ack(lease)
+        except Exception:
+            self.logger.error(
+                "TechScout lease handoff awaits queue recovery",
+                extra={"run_id": lease.run_id, "code": "queue_unavailable"},
+            )
 
     def _terminal(self, row: TechScoutRegistryRun, status: TechScoutStatus) -> None:
         self.registry.terminal_techscout(

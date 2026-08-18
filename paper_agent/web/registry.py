@@ -383,14 +383,14 @@ class RunRegistry:
                     stage="terminal", completed_stages=[], elapsed_seconds=0,
                 ).model_dump_json()
                 db.execute(
-                    """UPDATE techscout_runs SET status='failed',stage='terminal',
+                    """UPDATE techscout_runs SET status='timed_out',stage='terminal',
                        error_kind='deadline',error_code='deadline_exceeded',
                        progress_json=?,finished_at=?,updated_at=?
                        WHERE id=? AND status='queued'""",
                     (progress, now.isoformat(), now.isoformat(), run_id),
                 )
                 self._append_event_in_transaction(
-                    db, run_id, event_type="run", stage="terminal", status="failed",
+                    db, run_id, event_type="run", stage="terminal", status="timed_out",
                     label="TechScout run deadline expired before execution.",
                 )
                 db.commit()

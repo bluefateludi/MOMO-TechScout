@@ -86,6 +86,28 @@ def test_registry_claim_cancel_and_terminal_transitions_are_atomic(tmp_path):
         registry.requeue_techscout(run_id)
 
 
+def test_queued_run_expiring_before_claim_projects_timed_out(tmp_path, monkeypatch):
+    from paper_agent.web import registry as registry_module
+
+    admitted_at = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry_module, "utc_now", lambda: admitted_at)
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000104"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    monkeypatch.setattr(
+        registry_module,
+        "utc_now",
+        lambda: admitted_at + timedelta(seconds=121),
+    )
+
+    assert registry.claim_techscout(run_id, worker_id="worker-a") is None
+
+    expired = registry.get_techscout(run_id)
+    assert expired.status == "timed_out"
+    assert expired.error_kind == ErrorKind.DEADLINE
+    assert expired.error_code == "deadline_exceeded"
+
+
 def test_in_memory_queue_enforces_capacity_rate_limit_lease_reaping_and_dlq():
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
     queue = InMemoryRunQueue(capacity=2, rate_limit=1, rate_window_seconds=60)
@@ -152,7 +174,7 @@ def test_registry_deadline_expires_before_claim_with_typed_terminal_error(
 
     assert registry.claim_techscout(run_id, worker_id="worker-test") is None
     expired = registry.get_techscout(run_id)
-    assert expired.status == "failed"
+    assert expired.status == "timed_out"
     assert expired.progress.stage == "terminal"
     assert expired.error_kind is ErrorKind.DEADLINE
     assert expired.error_code == "deadline_exceeded"
@@ -588,3 +610,194 @@ def test_shutdown_hands_off_active_lease_without_claiming_io_was_terminated(tmp_
     assert executor.shutdown_complete is False
     assert executor.shutdown_limitation == "active_external_io_not_terminated"
     release.set()
+
+
+class _FailingReapQueue(InMemoryRunQueue):
+    def __init__(self, *, capacity):
+        super().__init__(capacity=capacity)
+        self.attempted = threading.Event()
+
+    def reap_expired(self, *, now=None):
+        self.attempted.set()
+        raise ConnectionError("redis password=do-not-log")
+
+
+class _FailOnceReserveQueue(InMemoryRunQueue):
+    def __init__(self):
+        super().__init__(capacity=4)
+        self.failed = False
+        self.failed_event = threading.Event()
+
+    def reserve(self, worker_id, *, lease_seconds, now=None):
+        if not self.failed:
+            self.failed = True
+            self.failed_event.set()
+            raise ConnectionError("redis token=do-not-log")
+        return super().reserve(worker_id, lease_seconds=lease_seconds, now=now)
+
+
+class _FailAfterSettlementQueue(InMemoryRunQueue):
+    def __init__(self, operation):
+        super().__init__(capacity=4)
+        self.operation = operation
+        self.tripped = False
+
+    def ack(self, lease):
+        if self.operation == "ack":
+            self.tripped = True
+            raise ConnectionError("redis secret=ack-do-not-log")
+        return super().ack(lease)
+
+    def retry(self, lease):
+        if self.operation == "retry":
+            self.tripped = True
+            raise ConnectionError("redis secret=retry-do-not-log")
+        return super().retry(lease)
+
+    def reap_expired(self, *, now=None):
+        if self.tripped:
+            raise ConnectionError("redis secret=settlement-do-not-log")
+        return super().reap_expired(now=now)
+
+
+def test_runner_reports_fatal_queue_failure_instead_of_remaining_false_ready(
+    tmp_path, caplog,
+):
+    executor = TechScoutSingleRunExecutor(
+        RunRegistry(tmp_path / "registry.sqlite3"),
+        tmp_path / "outputs",
+        queue=_FailingReapQueue(capacity=4),
+        queue_failure_limit=2,
+        queue_backoff_seconds=0.001,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        executor.start()
+        assert executor.wait_failed(timeout=1) is True
+
+    assert executor.ready() is False
+    assert executor.failure_code == "queue_unavailable"
+    assert "do-not-log" not in caplog.text
+    started = time.monotonic()
+    executor.close()
+    assert time.monotonic() - started < 0.5
+
+
+def test_external_worker_loop_returns_nonzero_after_fatal_queue_failure(tmp_path):
+    from paper_agent.web import techscout_worker
+
+    executor = TechScoutSingleRunExecutor(
+        RunRegistry(tmp_path / "registry.sqlite3"),
+        tmp_path / "outputs",
+        queue=_FailingReapQueue(capacity=4),
+        queue_failure_limit=1,
+        queue_backoff_seconds=0.001,
+    )
+    executor.start()
+
+    exit_code = techscout_worker.run_until_stopped(
+        executor, threading.Event(), poll_seconds=0.001,
+    )
+
+    assert exit_code == 1
+    executor.close()
+
+
+def test_close_interrupts_queue_failure_backoff(tmp_path):
+    queue = _FailingReapQueue(capacity=4)
+    executor = TechScoutSingleRunExecutor(
+        RunRegistry(tmp_path / "registry.sqlite3"),
+        tmp_path / "outputs",
+        queue=queue,
+        queue_failure_limit=100,
+        queue_backoff_seconds=10,
+        queue_backoff_max_seconds=10,
+    )
+    executor.start()
+    assert queue.attempted.wait(timeout=1)
+
+    started = time.monotonic()
+    executor.close()
+
+    assert time.monotonic() - started < 0.5
+
+
+def test_runner_recovers_after_transient_reserve_failure_and_consumes_work(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = _FailOnceReserveQueue()
+
+    def processor(row):
+        return WorkResult(
+            status="completed", projection_path="result.json",
+            progress=row.progress,
+        )
+
+    executor = TechScoutSingleRunExecutor(
+        registry,
+        tmp_path / "outputs",
+        queue=queue,
+        processor=processor,
+        queue_failure_limit=3,
+        queue_backoff_seconds=0.05,
+    )
+    run = registry.admit_techscout(
+        "00000000-0000-4000-8000-000000000320", REQUEST, 4,
+    )
+    queue.enqueue(run.id)
+    executor.start()
+    assert queue.failed_event.wait(timeout=1)
+    assert executor.ready() is False
+
+    for _ in range(100):
+        if (
+            registry.get_techscout(run.id).status == "completed"
+            and executor.ready()
+        ):
+            break
+        time.sleep(0.01)
+
+    assert registry.get_techscout(run.id).status == "completed"
+    assert executor.failed is False
+    assert executor.ready() is True
+    executor.close()
+
+
+@pytest.mark.parametrize("operation", ["ack", "retry"])
+def test_settlement_queue_failure_is_supervised_and_redacted(
+    tmp_path, caplog, operation,
+):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = _FailAfterSettlementQueue(operation)
+
+    def processor(row):
+        if operation == "retry":
+            raise TimeoutError("provider credential=do-not-log")
+        return WorkResult(
+            status="completed", projection_path="result.json",
+            progress=row.progress,
+        )
+
+    executor = TechScoutSingleRunExecutor(
+        registry,
+        tmp_path / "outputs",
+        queue=queue,
+        processor=processor,
+        queue_failure_limit=2,
+        queue_backoff_seconds=0.001,
+    )
+    run = registry.admit_techscout(
+        f"00000000-0000-4000-8000-00000000032{0 if operation == 'ack' else 1}",
+        REQUEST,
+        4,
+    )
+    queue.enqueue(run.id)
+
+    with caplog.at_level(logging.ERROR):
+        executor.start()
+        assert executor.wait_failed(timeout=1) is True
+
+    expected = "completed" if operation == "ack" else "queued"
+    assert registry.get_techscout(run.id).status == expected
+    assert executor.ready() is False
+    assert "do-not-log" not in caplog.text
+    executor.close()

@@ -78,7 +78,7 @@ from paper_agent.techscout.validation import REQUIRED_TERMINAL_ARTIFACTS, Valida
 from paper_agent.web.registry import RunRegistry, TechScoutRegistryRun, utc_now
 from paper_agent.web.errors import ErrorKind, WebError
 from paper_agent.web.task_queue import InMemoryRunQueue, RunQueue
-from paper_agent.web.worker import TechScoutWorker, WorkResult
+from paper_agent.web.worker import Processor, TechScoutWorker, WorkResult
 from paper_agent.web.techscout_api_models import (
     TechScoutApprovalProjection,
     TechScoutCandidateProjection,
@@ -1568,11 +1568,17 @@ class TechScoutSingleRunExecutor:
         *,
         verified_services_factory: StageServicesFactory | None = None,
         queue: RunQueue | None = None,
+        processor: Processor | None = None,
         queue_capacity: int = 4,
         worker_id: str | None = None,
         embedded_worker: bool = True,
         shutdown_grace_seconds: float = 5.0,
+        queue_failure_limit: int = 5,
+        queue_backoff_seconds: float = 0.1,
+        queue_backoff_max_seconds: float = 2.0,
     ) -> None:
+        if queue_failure_limit < 1:
+            raise ValueError("queue_failure_limit must be positive")
         self.registry = registry
         self.engine = TechScoutRunEngine(
             output_root,
@@ -1583,12 +1589,19 @@ class TechScoutSingleRunExecutor:
         self.queue = queue or InMemoryRunQueue(capacity=queue_capacity)
         self.worker_id = worker_id or f"local-{uuid.uuid4().hex[:12]}"
         self.worker = TechScoutWorker(
-            registry, self.queue, self._process, worker_id=self.worker_id,
+            registry, self.queue, processor or self._process, worker_id=self.worker_id,
         )
         self.embedded_worker = embedded_worker
         self.shutdown_grace_seconds = shutdown_grace_seconds
+        self.queue_failure_limit = queue_failure_limit
+        self.queue_backoff_seconds = queue_backoff_seconds
+        self.queue_backoff_max_seconds = queue_backoff_max_seconds
         self.shutdown_complete = True
         self.shutdown_limitation: str | None = None
+        self.failure_code: str | None = None
+        self._queue_healthy = False
+        self._queue_failures = 0
+        self._failed = threading.Event()
         self._stop = False
         self._condition = threading.Condition()
         self._thread: threading.Thread | None = None
@@ -1596,9 +1609,15 @@ class TechScoutSingleRunExecutor:
         self._logger = logging.getLogger("paper_agent.web.techscout_execution")
 
     def start(self) -> None:
-        self.available = self.queue.ready()
+        try:
+            self.available = self.queue.ready()
+        except Exception:
+            self.available = False
+        self._queue_healthy = self.available
         if not self.available:
-            raise RuntimeError("TechScout queue is not ready")
+            self.failure_code = "queue_unavailable"
+            self._failed.set()
+            raise RuntimeError("TechScout queue is not ready") from None
         if not self.embedded_worker:
             self._dispatch_thread = threading.Thread(
                 target=self._dispatch_work,
@@ -1639,7 +1658,28 @@ class TechScoutSingleRunExecutor:
             self._dispatch_thread.join(timeout=5)
 
     def ready(self) -> bool:
-        return self.available and self.queue.ready()
+        thread = self._thread if self.embedded_worker else self._dispatch_thread
+        if not self.available or not self._queue_healthy:
+            return False
+        if thread is None or not thread.is_alive():
+            self.available = False
+            return False
+        try:
+            queue_ready = self.queue.ready()
+        except Exception:
+            self._record_queue_failure()
+            return False
+        if not queue_ready:
+            self._record_queue_failure()
+            return False
+        return True
+
+    @property
+    def failed(self) -> bool:
+        return self._failed.is_set()
+
+    def wait_failed(self, timeout: float | None = None) -> bool:
+        return self._failed.wait(timeout)
 
     def notify(self) -> None:
         with self._condition:
@@ -1654,34 +1694,81 @@ class TechScoutSingleRunExecutor:
             with self._condition:
                 if self._stop:
                     return
-            self._reconcile_dispatch()
-            for lease in self.queue.reap_expired():
-                try:
-                    owner = self.registry.get_techscout(lease.run_id)
-                    recovered = self.registry.record_techscout_failure(
-                        lease.run_id, kind=ErrorKind.TRANSIENT,
-                        code="worker_interrupted", retryable=True,
-                        worker_id=lease.worker_id, lease_token=lease.token,
-                        fencing_token=owner.fencing_token,
-                    )
-                    if recovered.status == "dead_letter":
-                        self.queue.dead_letter_run(
-                            lease.run_id, reason="worker_interrupted",
+            try:
+                self._reconcile_dispatch()
+                for lease in self.queue.reap_expired():
+                    try:
+                        owner = self.registry.get_techscout(lease.run_id)
+                        recovered = self.registry.record_techscout_failure(
+                            lease.run_id, kind=ErrorKind.TRANSIENT,
+                            code="worker_interrupted", retryable=True,
+                            worker_id=lease.worker_id, lease_token=lease.token,
+                            fencing_token=owner.fencing_token,
                         )
-                    elif recovered.status != "queued":
-                        self.queue.discard(lease.run_id)
-                except WebError:
-                    pass
-            if not self.worker.process_once():
+                        if recovered.status == "dead_letter":
+                            self.queue.dead_letter_run(
+                                lease.run_id, reason="worker_interrupted",
+                            )
+                        elif recovered.status != "queued":
+                            self.queue.discard(lease.run_id)
+                    except WebError:
+                        pass
+                processed = self.worker.process_once()
+            except Exception:
+                if not self._handle_queue_failure():
+                    return
+                continue
+            self._record_queue_success()
+            if not processed:
                 with self._condition:
                     self._condition.wait(timeout=0.25)
+
+    def _handle_queue_failure(self) -> bool:
+        self._record_queue_failure()
+        self._logger.error(
+            "TechScout queue operation failed safely",
+            extra={
+                "code": "queue_unavailable",
+                "attempt": self._queue_failures,
+            },
+        )
+        if self._queue_failures >= self.queue_failure_limit:
+            self.failure_code = "queue_unavailable"
+            self._failed.set()
+            return False
+        delay = min(
+            self.queue_backoff_seconds * (2 ** (self._queue_failures - 1)),
+            self.queue_backoff_max_seconds,
+        )
+        with self._condition:
+            if self._stop:
+                return False
+            self._condition.wait(timeout=delay)
+            return not self._stop
+
+    def _record_queue_failure(self) -> None:
+        self.available = False
+        self._queue_healthy = False
+        self._queue_failures += 1
+
+    def _record_queue_success(self) -> None:
+        self._queue_failures = 0
+        self._queue_healthy = True
+        if not self._stop and not self._failed.is_set():
+            self.available = True
 
     def _dispatch_work(self) -> None:
         while True:
             with self._condition:
                 if self._stop:
                     return
-            self._reconcile_dispatch()
+            try:
+                self._reconcile_dispatch()
+            except Exception:
+                if not self._handle_queue_failure():
+                    return
+                continue
+            self._record_queue_success()
             with self._condition:
                 self._condition.wait(timeout=0.25)
 
@@ -1696,6 +1783,7 @@ class TechScoutSingleRunExecutor:
                     "TechScout queued delivery remains pending",
                     extra={"run_id": row.id, "code": "dispatch_pending"},
                 )
+                raise RuntimeError("queue dispatch unavailable") from None
 
     def _process(self, row: TechScoutRegistryRun) -> WorkResult:
         bundle, projection_path = self.engine.run(row)

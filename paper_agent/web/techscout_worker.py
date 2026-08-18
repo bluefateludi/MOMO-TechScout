@@ -13,6 +13,19 @@ from paper_agent.web.techscout_execution import TechScoutSingleRunExecutor
 from paper_agent.web.verified_composition import make_verified_services_factory
 
 
+def run_until_stopped(
+    executor: TechScoutSingleRunExecutor,
+    stopped: threading.Event,
+    *,
+    poll_seconds: float = 0.5,
+) -> int:
+    """Return non-zero when the supervised queue runner becomes fatal."""
+    while not stopped.wait(poll_seconds):
+        if executor.failed:
+            return 1
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run an at-least-once MOMO TechScout Redis worker.",
@@ -51,11 +64,13 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     executor.start()
+    exit_code = 0
     try:
-        while not stopped.wait(0.5):
-            pass
+        exit_code = run_until_stopped(executor, stopped)
     finally:
         executor.close()
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
