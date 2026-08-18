@@ -91,7 +91,7 @@ def test_run_events_migrate_and_page_with_opaque_cursor(tmp_path):
     )
 
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert db.execute("SELECT COUNT(*) FROM run_events").fetchone()[0] == 2
 
     first, has_more = registry.list_events(run_id, after_sequence=0, limit=1)
@@ -149,7 +149,7 @@ def test_v2_registry_migration_preserves_trace_and_accepts_techscout_runs(tmp_pa
     assert events[0].label == "Preserved v2 trace"
     assert techscout.status == "queued"
     with sqlite3.connect(path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         foreign_keys = db.execute("PRAGMA foreign_key_list(run_events)").fetchall()
     assert foreign_keys == []
 

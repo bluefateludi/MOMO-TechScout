@@ -293,6 +293,67 @@ def test_stale_worker_heartbeat_cannot_refresh_new_fenced_owner(tmp_path):
     ) is True
 
 
+def test_registry_claim_and_heartbeat_persist_absolute_lease_expiry(
+    tmp_path, monkeypatch,
+):
+    from paper_agent.web import registry as registry_module
+
+    now = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry_module, "utc_now", lambda: now)
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000212"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    first_expiry = now + timedelta(seconds=30)
+
+    claimed = registry.claim_techscout(
+        run_id,
+        worker_id="worker-a",
+        lease_token="lease-a",
+        lease_expires_at=first_expiry,
+    )
+
+    assert claimed is not None
+    assert claimed.lease_expires_at == first_expiry
+    extended_expiry = now + timedelta(seconds=60)
+    assert registry.heartbeat_techscout(
+        run_id,
+        worker_id=claimed.worker_id,
+        lease_token=claimed.lease_token,
+        fencing_token=claimed.fencing_token,
+        lease_expires_at=extended_expiry,
+    ) is True
+    assert registry.get_techscout(run_id).lease_expires_at == extended_expiry
+    assert registry.heartbeat_techscout(
+        run_id,
+        worker_id=claimed.worker_id,
+        lease_token=claimed.lease_token,
+        fencing_token=claimed.fencing_token,
+        lease_expires_at=first_expiry,
+    ) is True
+    assert registry.get_techscout(run_id).lease_expires_at == extended_expiry
+    monkeypatch.setattr(registry_module, "utc_now", lambda: first_expiry)
+    assert registry.claim_techscout(
+        run_id,
+        worker_id="duplicate-worker",
+        lease_token="duplicate-lease",
+        lease_expires_at=extended_expiry + timedelta(seconds=30),
+    ) is None
+    healthy = registry.get_techscout(run_id)
+    assert healthy.worker_id == "worker-a"
+    assert healthy.fencing_token == claimed.fencing_token
+
+    monkeypatch.setattr(registry_module, "utc_now", lambda: extended_expiry)
+    takeover = registry.claim_techscout(
+        run_id,
+        worker_id="worker-b",
+        lease_token="lease-b",
+        lease_expires_at=extended_expiry + timedelta(seconds=30),
+    )
+    assert takeover is not None
+    assert takeover.worker_id == "worker-b"
+    assert takeover.fencing_token == claimed.fencing_token + 1
+
+
 def test_terminal_transaction_prioritizes_cancel_over_success(tmp_path):
     registry = RunRegistry(tmp_path / "registry.sqlite3")
     run_id = "00000000-0000-4000-8000-000000000302"
@@ -423,6 +484,7 @@ def test_duplicate_delivery_for_running_owner_is_acked_without_retry_loop(tmp_pa
     assert original is not None
     assert registry.claim_techscout(
         run_id, worker_id="worker-a", lease_token=original.token,
+        lease_expires_at=original.expires_at,
     ) is not None
     assert queue.retry(original)
 
@@ -620,6 +682,75 @@ class _FailingReapQueue(InMemoryRunQueue):
     def reap_expired(self, *, now=None):
         self.attempted.set()
         raise ConnectionError("redis password=do-not-log")
+
+
+class _AmbiguousReapQueue(InMemoryRunQueue):
+    def __init__(self, *, capacity):
+        super().__init__(capacity=capacity)
+        self.drop_first_response = True
+
+    def reap_expired(self, *, now=None):
+        result = super().reap_expired(now=now)
+        if self.drop_first_response:
+            self.drop_first_response = False
+            raise ConnectionError("redis response lost after commit")
+        return result
+
+
+def test_ambiguous_reaper_success_allows_expired_registry_owner_takeover(
+    tmp_path, monkeypatch,
+):
+    from paper_agent.web import registry as registry_module
+
+    now = datetime(2026, 8, 18, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(registry_module, "utc_now", lambda: now)
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = _AmbiguousReapQueue(capacity=4)
+    run_id = "00000000-0000-4000-8000-000000000330"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    queue.enqueue(run_id)
+    old_lease = queue.reserve("old-worker", lease_seconds=1, now=now)
+    assert old_lease is not None
+    old_owner = registry.claim_techscout(
+        run_id,
+        worker_id=old_lease.worker_id,
+        lease_token=old_lease.token,
+        lease_expires_at=old_lease.expires_at,
+    )
+    assert old_owner is not None
+    boundary = old_lease.expires_at
+    monkeypatch.setattr(registry_module, "utc_now", lambda: boundary)
+
+    with pytest.raises(ConnectionError):
+        queue.reap_expired(now=boundary)
+    assert queue.reap_expired(now=boundary) == []
+
+    def processor(new_owner):
+        assert new_owner.worker_id == "new-worker"
+        assert new_owner.fencing_token == old_owner.fencing_token + 1
+        with pytest.raises(ConflictError):
+            registry.terminal_techscout(
+                run_id,
+                "completed",
+                projection_path="stale.json",
+                progress=old_owner.progress,
+                worker_id=old_owner.worker_id,
+                lease_token=old_owner.lease_token,
+                fencing_token=old_owner.fencing_token,
+            )
+        return WorkResult(
+            status="completed", projection_path="recovered.json",
+            progress=new_owner.progress,
+        )
+
+    worker = TechScoutWorker(
+        registry, queue, processor, worker_id="new-worker",
+    )
+    assert worker.process_once() is True
+
+    recovered = registry.get_techscout(run_id)
+    assert recovered.status == "completed"
+    assert recovered.projection_path == "recovered.json"
 
 
 class _FailOnceReserveQueue(InMemoryRunQueue):

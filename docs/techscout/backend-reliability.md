@@ -64,7 +64,12 @@ techscout-worker --redis-url redis://127.0.0.1:6379/0 \
 Workers reserve a 30-second lease and heartbeat every 10 seconds. Every claim
 stores the worker id, lease token, and a monotonic fencing token in the Registry;
 heartbeat, progress, failure, and terminal publication use that full ownership
-tuple as a compare-and-swap. The reaper
+tuple as a compare-and-swap. Registry also persists the absolute lease expiry and
+heartbeat extends it atomically with the owner tuple. If Redis commits an expired
+lease requeue but its response is lost, the replacement delivery may take over a
+still-`running` Registry row only when `lease_expires_at <= now`; takeover replaces
+the owner and lease and increments fencing in one transaction. A delivery arriving
+before that boundary remains a healthy duplicate and is acknowledged. The reaper
 returns expired deliveries to the queue and records an interrupted, bounded
 recovery in the Registry. Transient connection/timeout failures receive at most
 one retry by default. Permanent or exhausted failures become `dead_letter`; raw

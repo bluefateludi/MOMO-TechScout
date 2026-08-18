@@ -4,6 +4,7 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from paper_agent.web.context import execution_context
 from paper_agent.web.errors import ConflictError, ErrorKind, classify_exception
@@ -55,6 +56,7 @@ class TechScoutWorker:
             return False
         row = self.registry.claim_techscout(
             lease.run_id, worker_id=self.worker_id, lease_token=lease.token,
+            lease_expires_at=lease.expires_at,
         )
         if row is None:
             self.queue.ack(lease)
@@ -201,6 +203,10 @@ class TechScoutWorker:
                     lease.run_id, worker_id=lease.worker_id,
                     lease_token=lease.token,
                     fencing_token=fencing_token,
+                    lease_expires_at=(
+                        datetime.now(timezone.utc)
+                        + timedelta(seconds=self.lease_seconds)
+                    ),
                 )
             except Exception:
                 registry_owned = False

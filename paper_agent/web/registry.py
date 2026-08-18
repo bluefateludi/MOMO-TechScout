@@ -90,6 +90,7 @@ class TechScoutRegistryRun(StrictModel):
     cancel_requested: bool
     worker_id: str | None = None
     lease_token: str | None = None
+    lease_expires_at: datetime | None = None
     fencing_token: int = 0
     error_kind: ErrorKind | None = None
     error_code: str | None = None
@@ -116,7 +117,7 @@ class RunRegistry:
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 5:
+            if version > 6:
                 raise RuntimeError("run registry schema is newer than this server")
             db.execute("BEGIN IMMEDIATE")
             db.execute("""
@@ -250,7 +251,11 @@ class RunRegistry:
                 db.execute(
                     "CREATE INDEX idx_techscout_status_created ON techscout_runs(status,created_at,id)"
                 )
-            db.execute("PRAGMA user_version=5")
+            if version < 6:
+                db.execute(
+                    "ALTER TABLE techscout_runs ADD COLUMN lease_expires_at TEXT"
+                )
+            db.execute("PRAGMA user_version=6")
             db.commit()
 
     def ready(self) -> bool:
@@ -365,18 +370,54 @@ class RunRegistry:
         )
 
     def claim_techscout(
-        self, run_id: str, *, worker_id: str, lease_token: str | None = None,
+        self,
+        run_id: str,
+        *,
+        worker_id: str,
+        lease_token: str | None = None,
+        lease_expires_at: datetime | None = None,
     ) -> TechScoutRegistryRun | None:
         now = utc_now()
         lease_token = lease_token or f"compat:{uuid.uuid4().hex}"
+        lease_expires_at = lease_expires_at or now + timedelta(seconds=30)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT deadline_at FROM techscout_runs WHERE id=? AND status='queued'",
+                """SELECT status,deadline_at,cancel_requested,lease_expires_at,
+                          attempt_count,max_attempts,worker_id,lease_token,fencing_token
+                   FROM techscout_runs WHERE id=?""",
                 (run_id,),
             ).fetchone()
             if row is None:
                 db.rollback()
+                return None
+            takeover = row["status"] == "running" and (
+                row["lease_expires_at"] is None
+                or datetime.fromisoformat(row["lease_expires_at"]) <= now
+            )
+            if row["status"] != "queued" and not takeover:
+                db.rollback()
+                return None
+            if row["cancel_requested"]:
+                progress = TechScoutProgress(
+                    stage="terminal", completed_stages=[], elapsed_seconds=0,
+                ).model_dump_json()
+                db.execute(
+                    """UPDATE techscout_runs SET status='cancelled',stage='terminal',
+                       worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                       error_kind='cancelled',error_code='run_cancelled',
+                       progress_json=?,finished_at=?,updated_at=? WHERE id=?
+                       AND (status='queued' OR (status='running' AND fencing_token=?))""",
+                    (
+                        progress, now.isoformat(), now.isoformat(), run_id,
+                        row["fencing_token"],
+                    ),
+                )
+                self._append_event_in_transaction(
+                    db, run_id, event_type="run", stage="terminal", status="cancelled",
+                    label="TechScout run was cancelled before lease takeover.",
+                )
+                db.commit()
                 return None
             if datetime.fromisoformat(row["deadline_at"]) <= now:
                 progress = TechScoutProgress(
@@ -384,10 +425,15 @@ class RunRegistry:
                 ).model_dump_json()
                 db.execute(
                     """UPDATE techscout_runs SET status='timed_out',stage='terminal',
+                       worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
                        error_kind='deadline',error_code='deadline_exceeded',
                        progress_json=?,finished_at=?,updated_at=?
-                       WHERE id=? AND status='queued'""",
-                    (progress, now.isoformat(), now.isoformat(), run_id),
+                       WHERE id=? AND (status='queued' OR
+                       (status='running' AND fencing_token=?))""",
+                    (
+                        progress, now.isoformat(), now.isoformat(), run_id,
+                        row["fencing_token"],
+                    ),
                 )
                 self._append_event_in_transaction(
                     db, run_id, event_type="run", stage="terminal", status="timed_out",
@@ -395,19 +441,51 @@ class RunRegistry:
                 )
                 db.commit()
                 return None
+            if takeover and row["attempt_count"] >= row["max_attempts"]:
+                progress = TechScoutProgress(
+                    stage="terminal", completed_stages=[], elapsed_seconds=0,
+                ).model_dump_json()
+                db.execute(
+                    """UPDATE techscout_runs SET status='dead_letter',stage='terminal',
+                       worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                       error_kind='transient',error_code='worker_interrupted',
+                       progress_json=?,finished_at=?,updated_at=?
+                       WHERE id=? AND status='running' AND fencing_token=?""",
+                    (
+                        progress, now.isoformat(), now.isoformat(), run_id,
+                        row["fencing_token"],
+                    ),
+                )
+                self._append_event_in_transaction(
+                    db, run_id, event_type="run", stage="terminal",
+                    status="dead_letter",
+                    label="TechScout expired lease exhausted bounded recovery.",
+                )
+                db.commit()
+                return None
             changed = db.execute(
                 """UPDATE techscout_runs SET status='running',
                    started_at=COALESCE(started_at,?),updated_at=?,worker_id=?,
-                   lease_token=?,fencing_token=fencing_token+1,
-                   attempt_count=attempt_count+1 WHERE id=? AND status='queued'""",
+                   lease_token=?,lease_expires_at=?,fencing_token=fencing_token+1,
+                   error_kind=NULL,error_code=NULL,attempt_count=attempt_count+1
+                   WHERE id=? AND (status='queued' OR (status='running'
+                   AND fencing_token=? AND (lease_expires_at IS NULL
+                   OR lease_expires_at<=?)))""",
                 (
-                    now.isoformat(), now.isoformat(), worker_id, lease_token, run_id,
+                    now.isoformat(), now.isoformat(), worker_id, lease_token,
+                    lease_expires_at.isoformat(), run_id, row["fencing_token"],
+                    now.isoformat(),
                 ),
             ).rowcount
             if changed:
                 self._append_event_in_transaction(
-                    db, run_id, event_type="stage", stage="plan",
-                    status="running", label="TechScout execution started.",
+                    db, run_id,
+                    event_type="recovery" if takeover else "stage",
+                    stage="plan", status="running",
+                    label=(
+                        "TechScout expired lease was atomically taken over."
+                        if takeover else "TechScout execution started."
+                    ),
                 )
             db.commit()
         return self.get_techscout(run_id) if changed else None
@@ -517,7 +595,8 @@ class RunRegistry:
             changed = db.execute(
                 """UPDATE techscout_runs SET status=?,stage='terminal',progress_json=?,
                    projection_path=?,finished_at=?,updated_at=?,worker_id=NULL,
-                   lease_token=NULL,error_kind=?,error_code=? WHERE id=?
+                   lease_token=NULL,lease_expires_at=NULL,error_kind=?,error_code=?
+                   WHERE id=?
                    AND status IN ('queued','running','interrupted')
                    AND (?=0 OR (worker_id=? AND lease_token=? AND fencing_token=?))""",
                 (
@@ -622,7 +701,8 @@ class RunRegistry:
             progress = progress.model_copy(update={"stage": stage})
             db.execute(
                 """UPDATE techscout_runs SET status=?,stage=?,progress_json=?,
-                   worker_id=NULL,lease_token=NULL,error_kind=?,error_code=?,
+                   worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                   error_kind=?,error_code=?,
                    finished_at=?,updated_at=? WHERE id=? AND status='running'
                    AND worker_id=? AND lease_token=? AND fencing_token=?""",
                 (
@@ -651,14 +731,22 @@ class RunRegistry:
         worker_id: str,
         lease_token: str,
         fencing_token: int,
+        lease_expires_at: datetime | None = None,
     ) -> bool:
+        now = utc_now()
+        lease_expires_at = lease_expires_at or now + timedelta(seconds=30)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             changed = db.execute(
-                """UPDATE techscout_runs SET updated_at=? WHERE id=? AND status='running'
+                """UPDATE techscout_runs SET updated_at=?,lease_expires_at=
+                   CASE WHEN lease_expires_at IS NULL OR lease_expires_at < ?
+                        THEN ? ELSE lease_expires_at END
+                   WHERE id=? AND status='running'
                    AND worker_id=? AND lease_token=? AND fencing_token=?""",
                 (
-                    utc_now().isoformat(), run_id, worker_id, lease_token,
+                    now.isoformat(), lease_expires_at.isoformat(),
+                    lease_expires_at.isoformat(), run_id,
+                    worker_id, lease_token,
                     fencing_token,
                 ),
             ).rowcount
@@ -672,6 +760,7 @@ class RunRegistry:
             db.execute("BEGIN IMMEDIATE")
             changed = db.execute(
                 """UPDATE techscout_runs SET status='failed',stage='terminal',
+                   worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
                    finished_at=?,updated_at=? WHERE id=? AND status='running'""",
                 (now, now, run_id),
             ).rowcount
@@ -686,7 +775,8 @@ class RunRegistry:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             changed = db.execute(
-                """UPDATE techscout_runs SET status='queued',worker_id=NULL,updated_at=?
+                """UPDATE techscout_runs SET status='queued',worker_id=NULL,
+                   lease_token=NULL,lease_expires_at=NULL,updated_at=?
                    WHERE id=? AND status IN ('running','interrupted')
                    AND cancel_requested=0 AND attempt_count < max_attempts""",
                 (utc_now().isoformat(), run_id),
@@ -1021,7 +1111,12 @@ class RunRegistry:
             deadline_at=TypeAdapter(datetime).validate_python(row["deadline_at"]),
             attempt_count=row["attempt_count"], max_attempts=row["max_attempts"],
             cancel_requested=bool(row["cancel_requested"]), worker_id=row["worker_id"],
-            lease_token=row["lease_token"], fencing_token=row["fencing_token"],
+            lease_token=row["lease_token"],
+            lease_expires_at=(
+                TypeAdapter(datetime).validate_python(row["lease_expires_at"])
+                if row["lease_expires_at"] else None
+            ),
+            fencing_token=row["fencing_token"],
             error_kind=row["error_kind"], error_code=row["error_code"],
         )
 
