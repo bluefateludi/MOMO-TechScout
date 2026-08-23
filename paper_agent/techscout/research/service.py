@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from pydantic import ValidationError
 
@@ -45,7 +47,16 @@ from .models import (
     AcquisitionState,
     CandidateResearchResult,
     CandidateSourcePolicy,
+    FactDraft,
+    FactFinding,
+    FactResolutionStatus,
+    FactStance,
+    PlannedResearchQuery,
+    ResearchProvider,
+    ResearchQueryPlan,
     ResearchDelivery,
+    RetrievedFact,
+    SourceDiscovery,
     SourceAttempt,
 )
 from .normalization import (
@@ -66,6 +77,84 @@ class _NormalizationError(ValueError):
     pass
 
 
+class FactExtractionAdapter(Protocol):
+    """Extract exact, directly stated claims from one authoritative excerpt."""
+
+    def extract(
+        self,
+        *,
+        query: PlannedResearchQuery,
+        excerpt: str,
+    ) -> tuple[FactDraft, ...]: ...
+
+
+class ConservativeFactExtractionAdapter:
+    """Offline default that recognizes only query-relevant explicit statements."""
+
+    _STOPWORDS = {
+        "about",
+        "available",
+        "candidate",
+        "does",
+        "from",
+        "have",
+        "into",
+        "local",
+        "project",
+        "should",
+        "supports",
+        "that",
+        "this",
+        "version",
+        "what",
+        "when",
+        "which",
+        "with",
+    }
+    _NEGATION = re.compile(
+        r"\b(?:cannot|denies|does\s+not|is\s+not|no|not|unsupported|without)\b",
+        re.IGNORECASE,
+    )
+
+    def extract(
+        self,
+        *,
+        query: PlannedResearchQuery,
+        excerpt: str,
+    ) -> tuple[FactDraft, ...]:
+        query_terms = {
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9_-]+", query.question.casefold())
+            if len(token) >= 3 and token not in self._STOPWORDS
+        }
+        if not query_terms:
+            return ()
+        required_matches = max(1, math.ceil(len(query_terms) * 2 / 3))
+        statements = [
+            item.strip()
+            for item in re.split(r"(?<=[.!?])\s+|\n+", excerpt)
+            if item.strip()
+        ]
+        drafts: list[FactDraft] = []
+        for statement in statements:
+            statement_terms = set(
+                re.findall(r"[a-z0-9][a-z0-9_-]+", statement.casefold())
+            )
+            if len(query_terms & statement_terms) < required_matches:
+                continue
+            drafts.append(
+                FactDraft(
+                    statement=statement,
+                    stance=(
+                        FactStance.DENIES
+                        if self._NEGATION.search(statement)
+                        else FactStance.AFFIRMS
+                    ),
+                )
+            )
+        return tuple(drafts)
+
+
 class LiveEvidenceResearchService:
     """Acquire bounded official evidence and feed candidate-scoped context packets."""
 
@@ -80,6 +169,7 @@ class LiveEvidenceResearchService:
         chunk_size_chars: int = 1_200,
         max_source_age: timedelta = timedelta(days=30),
         stage_top_k: Mapping[ContextStage, int] | None = None,
+        fact_extractor: FactExtractionAdapter | None = None,
     ) -> None:
         if not 1 <= max_sources <= 5:
             raise ValueError("research max_sources must be between 1 and 5")
@@ -106,6 +196,7 @@ class LiveEvidenceResearchService:
         self._chunk_size = chunk_size_chars
         self._max_source_age = max_source_age
         self._stage_top_k = configured_top_k
+        self._fact_extractor = fact_extractor or ConservativeFactExtractionAdapter()
 
     def research(
         self,
@@ -121,7 +212,12 @@ class LiveEvidenceResearchService:
         expected_version = candidate.resolved_version or candidate.requested_version
         if expected_version is not None and policy.version != expected_version:
             raise ValueError("candidate source policy version does not match request")
-        result = self._acquire(policy, as_of=as_of)
+        query_plan = self._query_plan(
+            request=request,
+            candidate_name=candidate.name,
+            policy=policy,
+        )
+        result = self._acquire(policy, query_plan=query_plan, as_of=as_of)
         context = CandidateContextData(
             candidate_id=result.candidate_id,
             documents=result.documents,
@@ -143,14 +239,19 @@ class LiveEvidenceResearchService:
         self,
         policy: CandidateSourcePolicy,
         *,
+        query_plan: ResearchQueryPlan,
         as_of: datetime,
     ) -> CandidateResearchResult:
         documents: list[SourceDocument] = []
         chunks: list[SourceChunk] = []
         evidence: list[CandidateEvidence] = []
         attempts: list[SourceAttempt] = []
+        discoveries: list[SourceDiscovery] = []
         candidates: list[SourceCandidate] = []
-        seen_urls: set[str] = set()
+        fetched_urls: set[str] = set()
+        discovery_keys: set[tuple[str, str]] = set()
+        source_query_ids: dict[str, set[str]] = {}
+        source_states: dict[str, AcquisitionState] = {}
         normalization_policy = SourceNormalizationPolicy(
             candidate_id=policy.candidate_id,
             official_domains=policy.official_domains,
@@ -161,29 +262,33 @@ class LiveEvidenceResearchService:
             max_sources=self._max_sources,
         )
 
-        for query in policy.official_queries:
+        for query in query_plan.queries:
+            if ResearchProvider.TAVILY not in query.providers:
+                continue
             try:
                 search = self._search.search(
                     SearchInput(
-                        query=query,
+                        query=query.question,
                         candidate_id=policy.candidate_id,
-                        domains=policy.official_domains,
+                        domains=query.official_domains,
                         max_results=self._max_sources,
                     )
                 )
             except AdapterError as error:
-                attempts.append(self._failed_attempt("search", query, error))
+                attempts.append(
+                    self._failed_attempt("search", query.question, error)
+                )
                 continue
             if search.candidate_id != policy.candidate_id:
                 raise ValueError("search result belongs to another candidate")
             try:
-                self._provenance_state(search.provenance)
+                discovery_state = self._provenance_state(search.provenance)
             except _RejectedProvenance as error:
-                attempts.append(self._failed_attempt("search", query, error))
+                attempts.append(
+                    self._failed_attempt("search", query.question, error)
+                )
                 continue
             for hit in search.results:
-                if len(candidates) >= self._max_sources:
-                    break
                 try:
                     normalized_url = canonicalize_source_url(hit.url)
                 except ValueError as error:
@@ -191,11 +296,34 @@ class LiveEvidenceResearchService:
                         self._failed_attempt("fetch", hit.url, UnsafeUrl(str(error)))
                     )
                     continue
-                if normalized_url in seen_urls:
+                discovery_key = (query.query_id, normalized_url)
+                if discovery_key not in discovery_keys:
+                    discoveries.append(
+                        SourceDiscovery(
+                            discovery_id=self._stable_id(
+                                "discovery", query.query_id, normalized_url
+                            ),
+                            query_id=query.query_id,
+                            canonical_url=normalized_url,
+                            title=hit.title,
+                            search_summary=hit.snippet,
+                            provider=search.provenance.provider,
+                            state=discovery_state,
+                            discovered_at=search.provenance.retrieved_at,
+                            snapshot_sha256=search.provenance.snapshot_sha256,
+                            cache_fallback=search.provenance.cache_fallback,
+                        )
+                    )
+                    discovery_keys.add(discovery_key)
+                source_query_ids.setdefault(normalized_url, set()).add(query.query_id)
+                if (
+                    normalized_url in fetched_urls
+                    or len(candidates) >= self._max_sources
+                ):
                     continue
-                seen_urls.add(normalized_url)
+                fetched_urls.add(normalized_url)
                 try:
-                    UrlPolicy(allowed_domains=policy.official_domains).validate(
+                    UrlPolicy(allowed_domains=query.official_domains).validate(
                         hit.url
                     )
                     fetched = self._fetch.fetch(
@@ -203,6 +331,11 @@ class LiveEvidenceResearchService:
                     )
                     if fetched.candidate_id != policy.candidate_id:
                         raise ValueError("fetched source belongs to another candidate")
+                    fetched_url = canonicalize_source_url(fetched.url)
+                    if fetched_url != normalized_url:
+                        raise _NormalizationError(
+                            "fetched source identity does not match discovery"
+                        )
                     candidate = SourceCandidate(
                         candidate_id=policy.candidate_id,
                         url=fetched.url,
@@ -226,6 +359,7 @@ class LiveEvidenceResearchService:
                     )
                     candidates.append(candidate)
                     attempts.append(available_attempt)
+                    source_states[normalized_url] = available_attempt.state
                 except (
                     AdapterError,
                     ValidationError,
@@ -234,7 +368,12 @@ class LiveEvidenceResearchService:
                 ) as error:
                     attempts.append(self._failed_attempt("fetch", hit.url, error))
 
-        if policy.repository_url is not None:
+        github_query_ids = {
+            query.query_id
+            for query in query_plan.queries
+            if ResearchProvider.GITHUB in query.providers
+        }
+        if policy.repository_url is not None and github_query_ids:
             try:
                 github = self._github.inspect_repository(
                     GitHubInspectInput(
@@ -261,6 +400,10 @@ class LiveEvidenceResearchService:
                 )
                 self._validate_candidate(repository, normalization_policy)
                 github_candidates = [repository]
+                source_query_ids.setdefault(
+                    canonicalize_source_url(repository.url), set()
+                ).update(github_query_ids)
+                source_states[canonicalize_source_url(repository.url)] = state
                 for release in github.releases:
                     release_candidate = SourceCandidate(
                         candidate_id=policy.candidate_id,
@@ -278,6 +421,12 @@ class LiveEvidenceResearchService:
                     )
                     self._validate_candidate(release_candidate, normalization_policy)
                     github_candidates.append(release_candidate)
+                    source_query_ids.setdefault(
+                        canonicalize_source_url(release_candidate.url), set()
+                    ).update(github_query_ids)
+                    source_states[
+                        canonicalize_source_url(release_candidate.url)
+                    ] = state
                 attempts.append(
                     SourceAttempt(
                         operation="github",
@@ -302,14 +451,23 @@ class LiveEvidenceResearchService:
                 )
 
         normalized = normalize_and_rank_sources(candidates, normalization_policy)
-        self._materialize_sources(
+        materialized = self._materialize_sources(
             policy=policy,
             sources=normalized.authoritative_sources,
             documents=documents,
             chunks=chunks,
+        )
+        fact_findings = self._resolve_facts(
+            query_plan=query_plan,
+            sources=normalized.authoritative_sources,
+            materialized=materialized,
+            source_query_ids=source_query_ids,
             evidence=evidence,
         )
-        available_states = [item.state for item in attempts if item.available]
+        available_states = [
+            source_states[source.canonical_url]
+            for source in normalized.authoritative_sources
+        ]
         state = (
             AcquisitionState.LIVE
             if documents and AcquisitionState.LIVE in available_states
@@ -322,10 +480,64 @@ class LiveEvidenceResearchService:
             version=policy.version,
             state=state,
             research_only=policy.research_only,
+            query_plan=query_plan,
+            discoveries=tuple(discoveries),
             documents=tuple(documents),
             chunks=tuple(chunks),
             evidence=tuple(evidence),
+            fact_findings=fact_findings,
             attempts=tuple(attempts),
+        )
+
+    def _query_plan(
+        self,
+        *,
+        request: ResearchRequest,
+        candidate_name: str,
+        policy: CandidateSourcePolicy,
+    ) -> ResearchQueryPlan:
+        questions = policy.official_queries
+        if not questions:
+            questions = tuple(
+                f"{candidate_name} {constraint}"
+                for constraint in request.hard_constraints[:2]
+            ) or (request.question,)
+        providers: list[ResearchProvider] = []
+        if policy.official_domains:
+            providers.extend(
+                (
+                    ResearchProvider.TAVILY,
+                    ResearchProvider.OFFICIAL_DOCUMENTATION,
+                )
+            )
+        if policy.repository_url is not None:
+            providers.append(ResearchProvider.GITHUB)
+        if not providers:
+            raise ValueError("research query plan requires at least one provider")
+        queries = tuple(
+            PlannedResearchQuery(
+                query_id=self._stable_id(
+                    "research-query", policy.candidate_id, question
+                ),
+                question=question,
+                providers=tuple(providers),
+                official_domains=policy.official_domains,
+                repository_url=policy.repository_url,
+            )
+            for question in questions
+        )
+        identity = "\x1e".join(
+            (
+                policy.candidate_id,
+                policy.version or "unversioned",
+                *(item.query_id for item in queries),
+            )
+        )
+        return ResearchQueryPlan(
+            plan_id=self._stable_id("research-plan", identity),
+            candidate_id=policy.candidate_id,
+            target_version=policy.version,
+            queries=queries,
         )
 
     def _materialize_sources(
@@ -335,8 +547,9 @@ class LiveEvidenceResearchService:
         sources,
         documents,
         chunks,
-        evidence,
-    ) -> None:
+    ):
+        materialized = {}
+        per_source_chunk_limit = max(1, 200 // max(1, len(sources)))
         for source in sources:
             source_id = self._stable_id(
                 "source", policy.candidate_id, source.canonical_url
@@ -351,21 +564,122 @@ class LiveEvidenceResearchService:
                 as_of=source.accessed_at,
                 content_sha256=source.snapshot_sha256,
             )
-            source_chunks = self._chunks(source_id, source.normalized_text)
+            source_chunks = self._chunks(source_id, source.normalized_text)[
+                :per_source_chunk_limit
+            ]
             documents.append(document)
             chunks.extend(source_chunks)
-            evidence.extend(
-                CandidateEvidence(
-                    evidence_id=self._stable_id("evidence", chunk.chunk_id),
-                    candidate_id=policy.candidate_id,
-                    constraint="source relevance",
-                    claim=chunk.text,
-                    source_ids=(source_id,),
-                    chunk_ids=(chunk.chunk_id,),
-                    kind=EvidenceKind.RETRIEVED_FACT,
+            materialized[source.canonical_url] = (document, source_chunks)
+        return materialized
+
+    def _resolve_facts(
+        self,
+        *,
+        query_plan,
+        sources,
+        materialized,
+        source_query_ids,
+        evidence,
+    ) -> tuple[FactFinding, ...]:
+        max_per_query = max(1, 200 // len(query_plan.queries))
+        findings: list[FactFinding] = []
+        for query in query_plan.queries:
+            facts: list[RetrievedFact] = []
+            seen: set[tuple[str, str, str, FactStance]] = set()
+            for source in sources:
+                if query.query_id not in source_query_ids.get(
+                    source.canonical_url, set()
+                ):
+                    continue
+                document, source_chunks = materialized[source.canonical_url]
+                for chunk in source_chunks:
+                    drafts = self._fact_extractor.extract(
+                        query=query,
+                        excerpt=chunk.text,
+                    )
+                    for draft in drafts:
+                        if draft.statement not in chunk.text:
+                            raise ValueError(
+                                "fact extraction must return an exact source statement"
+                            )
+                        key = (
+                            document.source_id,
+                            chunk.chunk_id,
+                            draft.statement,
+                            draft.stance,
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        evidence_id = self._stable_id(
+                            "evidence",
+                            query.query_id,
+                            document.source_id,
+                            chunk.chunk_id,
+                            draft.statement,
+                            draft.stance.value,
+                        )
+                        evidence.append(
+                            CandidateEvidence(
+                                evidence_id=evidence_id,
+                                candidate_id=query_plan.candidate_id,
+                                constraint=query.question,
+                                claim=draft.statement,
+                                source_ids=(document.source_id,),
+                                chunk_ids=(chunk.chunk_id,),
+                                kind=EvidenceKind.RETRIEVED_FACT,
+                            )
+                        )
+                        facts.append(
+                            RetrievedFact(
+                                fact_id=self._stable_id("fact", evidence_id),
+                                query_id=query.query_id,
+                                statement=draft.statement,
+                                stance=draft.stance,
+                                evidence_id=evidence_id,
+                                source_ids=(document.source_id,),
+                                chunk_ids=(chunk.chunk_id,),
+                            )
+                        )
+                        if len(facts) >= max_per_query:
+                            break
+                    if len(facts) >= max_per_query:
+                        break
+                if len(facts) >= max_per_query:
+                    break
+            stances = {item.stance for item in facts}
+            if not facts:
+                findings.append(
+                    FactFinding(
+                        query_id=query.query_id,
+                        question=query.question,
+                        status=FactResolutionStatus.UNKNOWN,
+                        facts=(),
+                        reason=(
+                            "no current version-compatible authoritative source "
+                            "directly stated a relevant fact"
+                        ),
+                    )
                 )
-                for chunk in source_chunks
-            )
+            elif stances == {FactStance.AFFIRMS, FactStance.DENIES}:
+                findings.append(
+                    FactFinding(
+                        query_id=query.query_id,
+                        question=query.question,
+                        status=FactResolutionStatus.CONFLICT,
+                        facts=tuple(facts),
+                    )
+                )
+            else:
+                findings.append(
+                    FactFinding(
+                        query_id=query.query_id,
+                        question=query.question,
+                        status=FactResolutionStatus.RESOLVED,
+                        facts=tuple(facts),
+                    )
+                )
+        return tuple(findings)
 
     @staticmethod
     def _validate_candidate(candidate, policy) -> None:
@@ -421,17 +735,12 @@ class LiveEvidenceResearchService:
 
     @staticmethod
     def _github_text(output: GitHubInspectOutput) -> str:
-        issues = "\n".join(
-            f"issue {item.number} {item.state} {item.title} {item.url}"
-            for item in output.issues
-        )
         return "\n\n".join(
             part
             for part in (
                 output.description,
                 f"default branch {output.default_branch}; archived {output.archived}",
                 output.readme_excerpt,
-                issues,
             )
             if part.strip()
         )

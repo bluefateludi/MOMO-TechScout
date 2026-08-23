@@ -1,0 +1,38 @@
+{
+  "candidate_id": "candidate:qdrant",
+  "version": "1.0",
+  "queries": [
+    "Qdrant metadata filtering in version 1.0",
+    "Qdrant backup API in version 1.0"
+  ],
+  "search_results": {
+    "Qdrant metadata filtering in version 1.0": [
+      {
+        "title": "Official filtering guide",
+        "url": "https://docs.example.com/filtering?utm_source=tavily",
+        "snippet": "SEARCH_ONLY: filtering is always available"
+      },
+      {
+        "title": "Duplicate filtering guide",
+        "url": "https://DOCS.example.com:443/filtering#details",
+        "snippet": "duplicate discovery"
+      }
+    ],
+    "Qdrant backup API in version 1.0": []
+  },
+  "official_pages": {
+    "https://docs.example.com/filtering?utm_source=tavily": "Metadata filtering is supported in version 1.0."
+  },
+  "github": {
+    "repository_url": "https://github.com/qdrant/qdrant-client",
+    "description": "Qdrant Python client",
+    "readme_excerpt": "Metadata filtering is not supported in version 1.0.",
+    "releases": [
+      {
+        "tag": "v2.0",
+        "url": "https://github.com/qdrant/qdrant-client/releases/tag/v2.0",
+        "published_at": "2026-08-22T00:00:00+00:00"
+      }
+    ]
+  }
+}

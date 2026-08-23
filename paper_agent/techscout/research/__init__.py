@@ -3,7 +3,16 @@ from .models import (
     AcquisitionState,
     CandidateResearchResult,
     CandidateSourcePolicy,
+    FactDraft,
+    FactFinding,
+    FactResolutionStatus,
+    FactStance,
+    PlannedResearchQuery,
+    ResearchProvider,
+    ResearchQueryPlan,
     ResearchDelivery,
+    RetrievedFact,
+    SourceDiscovery,
     SourceAttempt,
 )
 from .normalization import (
@@ -19,7 +28,11 @@ from .normalization import (
     canonicalize_source_url,
     normalize_and_rank_sources,
 )
-from .service import LiveEvidenceResearchService
+from .service import (
+    ConservativeFactExtractionAdapter,
+    FactExtractionAdapter,
+    LiveEvidenceResearchService,
+)
 
 __all__ = [
     "AcquisitionState",
@@ -28,12 +41,23 @@ __all__ = [
     "ClaimBoundary",
     "ContentOrigin",
     "Freshness",
+    "FactDraft",
+    "FactExtractionAdapter",
+    "FactFinding",
+    "FactResolutionStatus",
+    "FactStance",
     "LiveEvidenceResearchService",
     "NormalizedSource",
     "ResearchDelivery",
+    "ResearchProvider",
+    "ResearchQueryPlan",
+    "RetrievedFact",
+    "PlannedResearchQuery",
+    "ConservativeFactExtractionAdapter",
     "SourceAuthority",
     "SourceAttempt",
     "SourceCandidate",
+    "SourceDiscovery",
     "SourceNormalizationPolicy",
     "SourceNormalizationResult",
     "VersionFit",

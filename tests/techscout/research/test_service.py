@@ -541,6 +541,23 @@ def test_large_live_source_is_bounded_before_context_delivery() -> None:
     assert 1 <= len(delivery.context.chunks) <= 8
 
 
+def test_multisource_chunk_and_fact_materialization_stays_within_contract() -> None:
+    content = "\n\n".join(
+        f"metadata filtering persistence section {index}" for index in range(300)
+    )
+
+    delivery = _service(fetch=_Fetch(content=content)).research(
+        request=_request(),
+        policy=_policy(),
+        stage=ContextStage.RESEARCH,
+        as_of=NOW,
+    )
+
+    assert len(delivery.research.chunks) <= 200
+    assert len(delivery.research.evidence) <= 200
+    assert delivery.research.fact_findings[0].facts
+
+
 def test_hero_case_keeps_pgvector_research_only() -> None:
     assert hero_case_policy(
         Candidate(candidate_id="candidate:chroma", name="Chroma")
