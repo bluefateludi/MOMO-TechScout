@@ -105,6 +105,28 @@ describe("fixture-backed TechScout views", () => {
     expect(await screen.findByRole("note")).toHaveTextContent(syntheticNotice); expect(screen.getByText(/no external URL/i)).toBeInTheDocument();
   });
 
+  it("links report claims to numbered evidence authority and back to the cited claim", async () => {
+    const routes = <Routes><Route path="/runs/:id/report" element={<ReportPage/>}/><Route path="/runs/:id/evidence/:evidenceId" element={<EvidencePage/>}/></Routes>;
+    render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}/report`]}>{routes}</MemoryRouter>);
+    const citations = await screen.findAllByRole("link", { name: /open evidence E01.*Chroma documents local persistent storage/i });
+    expect(citations[0]).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}/evidence/ev-chroma-persistence?citation=E01&return=constraint-1`);
+    expect(screen.getAllByText(/Synthetic · Retrieved fact/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("E02")[0].closest("a")).toHaveAccessibleName(/local measurement/i);
+
+    await userEvent.click(citations[0]);
+    expect(await screen.findByText("E01")).toHaveClass("citation-marker");
+    const backLink = screen.getByRole("link", { name: /back to cited claim/i });
+    expect(backLink).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}/report#constraint-1`);
+  });
+
+  it("restores the cited report row after asynchronous report loading", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}/report#constraint-1`]}><Routes><Route path="/runs/:id/report" element={<ReportPage/>}/></Routes></MemoryRouter>);
+    expect(await screen.findByText("local persistence")).toBeInTheDocument();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" }));
+  });
+
   it("does not label a live candidate as a synthetic fixture", async () => {
     vi.mocked(techScoutApi.getEvidence).mockResolvedValue({ data: { items: techScoutEvidence.map((item) => ({ ...item, acquisition_state: "live" as const })) } });
     render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}/candidates/chroma`]}><Routes><Route path="/runs/:id/candidates/:candidateId" element={<CandidatePage/>}/></Routes></MemoryRouter>);

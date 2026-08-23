@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "baseline": "momo-scholar-offline-demo-v1",
+  "scope": "synthetic_regression_contract",
+  "inputs": {
+    "evaluation_fixture": {
+      "path": "tests/fixtures/eval_cases.json",
+      "sha256": "5ef4d0935ba58bbb9c4754cd5daf6ffc701f27115b540a8a983748f8920a8db5"
+    },
+    "retrieval_fixture": {
+      "path": "tests/fixtures/retrieval_eval_cases.json",
+      "sha256": "53eda9e06a748b6335c157bd28f5bafe246dc7e4072aba081852f80e122d6fd5"
+    }
+  },
+  "parameters": {
+    "k": 3
+  },
+  "numeric_tolerance": 1e-12,
+  "expected": {
+    "claim_and_citation": {
+      "summary": {
+        "case_count": 1,
+        "retrieval_hit_rate": 0.5,
+        "evidence_coverage": 0.5,
+        "unsupported_claim_rate": 0.5,
+        "citation_validity": 0.5
+      }
+    },
+    "retrieval": {
+      "k": 3,
+      "case_count": 7,
+      "summary": {
+        "lexical": {
+          "recall_at_k": 0.6428571428571429,
+          "precision_at_k": 0.7142857142857143,
+          "mrr_at_k": 0.7142857142857143,
+          "ndcg_at_k": 0.6894620938755086
+        },
+        "vector": {
+          "recall_at_k": 0.5,
+          "precision_at_k": 0.5714285714285714,
+          "mrr_at_k": 0.5714285714285714,
+          "ndcg_at_k": 0.42646018482472176
+        },
+        "hybrid": {
+          "recall_at_k": 0.8571428571428571,
+          "precision_at_k": 0.7857142857142857,
+          "mrr_at_k": 0.7857142857142857,
+          "ndcg_at_k": 0.804418536224494
+        }
+      }
+    }
+  },
+  "interpretation": "These values are deterministic synthetic regression evidence only; they are not production, model-quality, or public benchmark results."
+}

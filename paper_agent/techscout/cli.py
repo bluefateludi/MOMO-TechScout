@@ -5,13 +5,19 @@ from typing import Annotated
 
 import typer
 
+from paper_agent.config import load_settings
+from paper_agent.techscout.diagnostics import (
+    VerifiedStartupReport,
+    configuration_failure_report,
+    diagnose_verified_startup,
+)
 from paper_agent.web_server import run_web_server, validate_server_binding
 
 
 app = typer.Typer(
     help=(
         "MOMO TechScout local product. Fast Demo uses frozen synthetic evidence; "
-        "Verified accepts live intent but live execution is not connected."
+        "Verified uses bounded live/cache research and reviewed Docker when ready."
     ),
     no_args_is_help=True,
 )
@@ -20,6 +26,35 @@ app = typer.Typer(
 @app.callback()
 def main() -> None:
     """Run MOMO TechScout product commands."""
+
+
+@app.command()
+def doctor(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the stable machine-readable report."),
+    ] = False,
+) -> None:
+    """Check Verified provider, Docker, and install-network readiness safely."""
+    try:
+        report = diagnose_verified_startup(load_settings())
+    except Exception:
+        report = configuration_failure_report()
+
+    if json_output:
+        typer.echo(report.model_dump_json(indent=2))
+    else:
+        _render_doctor_report(report)
+    if report.status != "ready":
+        raise typer.Exit(code=1)
+
+
+def _render_doctor_report(report: VerifiedStartupReport) -> None:
+    typer.echo(f"Verified startup: {report.status.upper()}")
+    for check in report.checks:
+        typer.echo(f"[{check.status.upper()}] {check.component}: {check.code}")
+        typer.echo(f"  {check.message}")
+        typer.echo(f"  Action: {check.action}")
 
 
 @app.command()
@@ -61,10 +96,7 @@ def serve(
         raise typer.BadParameter(str(error), param_hint="--host") from None
 
     typer.echo("Fast Demo: frozen synthetic evidence; no live provider or Docker execution.")
-    typer.echo(
-        "Verified: completed_with_limitations (live_execution_unavailable); "
-        "live verification is not connected."
-    )
+    typer.echo("Verified: run `techscout doctor` before a live provider/Docker demo.")
     run_web_server(
         host=host,
         port=port,

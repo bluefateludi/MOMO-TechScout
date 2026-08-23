@@ -27,12 +27,30 @@ cd web
 npm ci
 npm run build
 cd ..
+techscout doctor
 techscout serve
 ```
 
+`techscout doctor` is a read-only startup check for the complete Verified demo.
+It does not call Tavily, DashScope, GitHub, or any other provider, and it does
+not start a container. It validates local configuration, checks whether Docker
+can reach the daemon within three seconds, and confirms that the reviewed install
+stage has a dedicated externally enforced destination-allowlisted network. A
+non-ready report exits with status 1 and gives stable codes plus an operator
+action. Use `techscout doctor --json` for automation.
+
+The complete Verified demo is ready only when `TAVILY_API_KEY`, Docker, and the
+reviewed install network are ready. `DASHSCOPE_API_KEY` enables optional bounded
+model-assisted drafting; the deterministic Gate remains authoritative without
+it. `GITHUB_TOKEN` is optional for public read-only access but reduces rate-limit
+risk. Never set `TECHSCOUT_DOCKER_EGRESS_ALLOWLIST_ENFORCED=true` until the named
+network is actually restricted externally to approved package destinations.
+
 Then open `http://127.0.0.1:8000`. The v2 API is under `/api/v2/runs`; the UI submits `fast` or `verified`. The default server is single-process and loopback-only. Binding beyond loopback requires the explicit CLI flag and is not recommended because authentication is not implemented.
 
-`techscout --help` and `techscout serve --help` show the current mode boundary. A non-loopback bind is rejected unless the operator explicitly adds `--allow-network`:
+`techscout --help`, `techscout doctor --help`, and `techscout serve --help` show
+the current mode and readiness boundaries. A non-loopback bind is rejected unless
+the operator explicitly adds `--allow-network`:
 
 ```console
 techscout serve --host 0.0.0.0 --allow-network
