@@ -4,6 +4,18 @@ import uuid
 from pathlib import Path
 
 from paper_agent.techscout.decision_context import DecisionContext, EnvironmentSpec
+from paper_agent.techscout.models import ResearchPlan
+from paper_agent.techscout.planning import UserRequirement
+from paper_agent.techscout.workflow import (
+    DecisionWorkflow,
+    DecisionWorkflowService,
+    ResearchNotReadyError,
+    WorkflowCommandConflictError,
+    WorkflowConcurrencyError,
+    WorkflowEventList,
+    WorkflowNotFoundError,
+    WorkflowTransitionError,
+)
 from paper_agent.web.errors import WebError
 from paper_agent.web.task_queue import QueueFullError
 from paper_agent.web.event_cursor import decode_event_cursor, encode_event_cursor
@@ -39,11 +51,22 @@ class TechScoutProjectionService:
         executor: TechScoutSingleRunExecutor,
         output_root: Path,
         capacity: int,
+        workflow: DecisionWorkflowService | None = None,
     ) -> None:
         self.registry = registry
         self.executor = executor
         self.output_root = output_root.resolve()
         self.capacity = capacity
+        if workflow is None:
+            from paper_agent.techscout.workflow import (
+                DeterministicCriteriaDraftPlanner,
+                SqliteDecisionWorkflowStore,
+            )
+            workflow = DecisionWorkflowService(
+                SqliteDecisionWorkflowStore(registry.path),
+                planner=DeterministicCriteriaDraftPlanner(),
+            )
+        self.workflow = workflow
 
     def create(
         self,
@@ -63,17 +86,84 @@ class TechScoutProjectionService:
         row, _ = self.registry.admit_techscout_idempotent(
             str(uuid.uuid4()), request, capacity=self.capacity,
             idempotency_key=idempotency_key,
+            workflow_required=True,
+        )
+        self.workflow.create(row.id, row.request.decision_context)
+        return self._summary(row)
+
+    def workflow_detail(self, run_id: str) -> DecisionWorkflow:
+        self.registry.get_techscout(run_id)
+        return self._workflow_call(self.workflow.get, run_id)
+
+    def review_requirements(
+        self,
+        run_id: str,
+        *,
+        command_id: str,
+        requirements: tuple[UserRequirement, ...],
+    ) -> DecisionWorkflow:
+        self.registry.get_techscout(run_id)
+        return self._workflow_call(
+            self.workflow.review_requirements,
+            run_id,
+            command_id=command_id,
+            requirements=requirements,
+        )
+
+    def confirm_requirements(self, run_id: str, *, command_id: str) -> DecisionWorkflow:
+        self.registry.get_techscout(run_id)
+        return self._workflow_call(
+            self.workflow.confirm_requirements,
+            run_id,
+            command_id=command_id,
+        )
+
+    def confirm_criteria(
+        self,
+        run_id: str,
+        *,
+        command_id: str,
+        contract_id: str,
+    ) -> DecisionWorkflow:
+        row = self.registry.get_techscout(run_id)
+        workflow = self._workflow_call(
+            self.workflow.confirm_criteria,
+            run_id,
+            command_id=command_id,
+            contract_id=contract_id,
         )
         if row.status == "queued":
             try:
-                self.executor.submit(row.id)
+                self.executor.submit(run_id)
             except QueueFullError as error:
-                self._record_dispatch_pending(row.id, "queue_full")
+                self._record_dispatch_pending(run_id, "queue_full")
                 raise WebError(503, "queue_full") from error
             except Exception as error:
-                self._record_dispatch_pending(row.id, "queue_unavailable")
+                self._record_dispatch_pending(run_id, "queue_unavailable")
                 raise WebError(503, "execution_unavailable") from error
-        return self._summary(row)
+        return workflow
+
+    def workflow_research_plan(self, run_id: str) -> ResearchPlan:
+        self.registry.get_techscout(run_id)
+        return self._workflow_call(self.workflow.research_plan, run_id)
+
+    def workflow_events(self, run_id: str) -> WorkflowEventList:
+        self.registry.get_techscout(run_id)
+        return WorkflowEventList(items=self._workflow_call(self.workflow.events, run_id))
+
+    @staticmethod
+    def _workflow_call(function, *args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except WorkflowNotFoundError as error:
+            raise WebError(404, error.code) from error
+        except (
+            WorkflowCommandConflictError,
+            WorkflowConcurrencyError,
+            WorkflowTransitionError,
+            ResearchNotReadyError,
+        ) as error:
+            raise WebError(409, error.code) from error
 
     def _record_dispatch_pending(self, run_id: str, reason: str) -> None:
         try:

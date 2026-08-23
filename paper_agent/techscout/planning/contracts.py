@@ -26,7 +26,7 @@ class UserRequirement(TechScoutModel):
 
 
 class CriteriaPlanningInput(TechScoutModel):
-    run_id: StableId
+    run_id: NonEmptyStr
     requirements: tuple[UserRequirement, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -93,7 +93,7 @@ class PocCheck(_TraceableItem):
 
 class SelectionCriteriaContract(TechScoutModel):
     contract_id: StableId
-    run_id: StableId
+    run_id: NonEmptyStr
     requirements: tuple[UserRequirement, ...] = Field(min_length=1)
     hard_constraints: tuple[HardConstraint, ...]
     evaluation_criteria: tuple[EvaluationCriterion, ...]

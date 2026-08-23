@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from paper_agent.techscout.planning import RequirementKind, UserRequirement
 from paper_agent.web.context import execution_context
 from paper_agent.web.errors import ConflictError, ErrorKind, WebError, classify_exception
 from paper_agent.web.registry import RunRegistry
@@ -585,16 +586,37 @@ def test_idempotent_retry_redelivers_registry_outbox_after_enqueue_failure(tmp_p
     service = TechScoutProjectionService(
         registry, executor, tmp_path / "outputs", capacity=4,
     )
+    created = service.create(REQUEST, idempotency_key="outbox-1")
+    queued = registry.get_techscout(str(created.id))
+    service.review_requirements(
+        queued.id,
+        command_id="review-1",
+        requirements=(UserRequirement(
+            requirement_id="requirement:persistence",
+            kind=RequirementKind.HARD_CONSTRAINT,
+            statement="local persistence",
+        ),),
+    )
+    criteria = service.confirm_requirements(
+        queued.id, command_id="requirements-1",
+    )
     with pytest.raises(WebError) as raised:
-        service.create(REQUEST, idempotency_key="outbox-1")
+        service.confirm_criteria(
+            queued.id,
+            command_id="criteria-1",
+            contract_id=criteria.selection_criteria.contract_id,
+        )
     assert raised.value.code == "execution_unavailable"
-    queued = registry.list_techscout()[0]
     assert queued.status == "queued"
     events, _ = registry.list_events(queued.id, after_sequence=0, limit=20)
     assert any(event.label == "Dispatch pending: queue_unavailable." for event in events)
 
-    repeated = service.create(REQUEST, idempotency_key="outbox-1")
-    assert str(repeated.id) == queued.id
+    repeated = service.confirm_criteria(
+        queued.id,
+        command_id="criteria-1",
+        contract_id=criteria.selection_criteria.contract_id,
+    )
+    assert repeated.state.value == "research_ready"
     delivered = queue.reserve("worker-a", lease_seconds=30)
     assert delivered is not None and delivered.run_id == queued.id
     executor.close()

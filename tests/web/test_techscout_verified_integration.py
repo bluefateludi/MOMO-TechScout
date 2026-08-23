@@ -179,14 +179,44 @@ def _body(candidates=None):
     }
 
 
+def _confirm_workflow(client: TestClient, run_id: str, body: dict[str, object]) -> None:
+    requirements = [
+        {
+            "requirement_id": f"requirement:must-have-{index}",
+            "kind": "hard_constraint",
+            "statement": statement,
+        }
+        for index, statement in enumerate(body["hard_constraints"])
+    ]
+    review = client.post(
+        f"/api/v2/runs/{run_id}/workflow/requirements-review",
+        json={"requirements": requirements},
+        headers={"Idempotency-Key": "verified-review"},
+    )
+    assert review.status_code == 200
+    criteria = client.post(
+        f"/api/v2/runs/{run_id}/workflow/confirm-requirements",
+        headers={"Idempotency-Key": "verified-requirements"},
+    )
+    assert criteria.status_code == 200
+    ready = client.post(
+        f"/api/v2/runs/{run_id}/workflow/confirm-criteria",
+        json={"contract_id": criteria.json()["selection_criteria"]["contract_id"]},
+        headers={"Idempotency-Key": "verified-criteria"},
+    )
+    assert ready.status_code == 200
+
+
 def _run(tmp_path: Path, factory, body=None):
     app = create_app(
         state_root=tmp_path / "state", output_root=tmp_path / "outputs",
         demo_root=None, web_dist=tmp_path / "missing", verified_services_factory=factory,
     )
     with TestClient(app) as client:
-        created = client.post("/api/v2/runs", json=body or _body())
+        request_body = body or _body()
+        created = client.post("/api/v2/runs", json=request_body)
         run_id = created.json()["id"]
+        _confirm_workflow(client, run_id, request_body)
         for _ in range(400):
             detail = client.get(f"/api/v2/runs/{run_id}").json()
             if detail["status"] not in {"queued", "running"}:

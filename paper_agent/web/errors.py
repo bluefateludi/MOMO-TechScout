@@ -26,6 +26,11 @@ _MESSAGES = {
     "rate_limited": "Too many requests were submitted.",
     "run_cancelled": "The run was cancelled.",
     "deadline_exceeded": "The run deadline was exceeded.",
+    "workflow_not_found": "The decision workflow was not found.",
+    "workflow_command_conflict": "The workflow command key was reused with different input.",
+    "workflow_concurrency_conflict": "The decision workflow changed concurrently.",
+    "invalid_workflow_transition": "The requested decision workflow transition is not legal.",
+    "research_not_ready": "Research cannot start until requirements and criteria are confirmed.",
 }
 
 

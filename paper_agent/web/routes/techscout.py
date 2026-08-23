@@ -4,6 +4,9 @@ from fastapi import APIRouter, Header, Query, Request
 from pydantic import UUID4
 
 from paper_agent.techscout.decision_context import DecisionContext
+from paper_agent.techscout.models import ResearchPlan
+from paper_agent.techscout.planning import RequirementKind, UserRequirement
+from paper_agent.techscout.workflow import DecisionWorkflow, WorkflowEventList
 from paper_agent.web.api_models import ErrorResponse
 from paper_agent.web.techscout_api_models import (
     TechScoutCandidateList,
@@ -16,12 +19,19 @@ from paper_agent.web.techscout_api_models import (
     TechScoutRunList,
     TechScoutRunSummary,
     TracePage,
+    CriteriaConfirmationRequest,
+    RequirementsReviewRequest,
 )
 from paper_agent.web.techscout_service import TechScoutProjectionService
 
 
 router = APIRouter(prefix="/api/v2/runs", tags=["techscout-runs"])
-ERRORS = {404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}}
+ERRORS = {
+    404: {"model": ErrorResponse},
+    409: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
 
 
 def _service(request: Request) -> TechScoutProjectionService:
@@ -60,6 +70,83 @@ def get_run(run_id: UUID4, request: Request) -> TechScoutRunDetail:
 )
 def get_decision_context(run_id: UUID4, request: Request) -> DecisionContext:
     return _service(request).decision_context(str(run_id))
+
+
+@router.get("/{run_id}/workflow", response_model=DecisionWorkflow, responses=ERRORS)
+def get_workflow(run_id: UUID4, request: Request) -> DecisionWorkflow:
+    return _service(request).workflow_detail(str(run_id))
+
+
+@router.post(
+    "/{run_id}/workflow/requirements-review",
+    response_model=DecisionWorkflow,
+    responses=ERRORS,
+)
+def review_requirements(
+    run_id: UUID4,
+    body: RequirementsReviewRequest,
+    request: Request,
+    idempotency_key: str = Header(min_length=1, max_length=128),
+) -> DecisionWorkflow:
+    return _service(request).review_requirements(
+        str(run_id),
+        command_id=idempotency_key,
+        requirements=tuple(
+            UserRequirement(
+                requirement_id=item.requirement_id,
+                kind=RequirementKind(item.kind),
+                statement=item.statement,
+            )
+            for item in body.requirements
+        ),
+    )
+
+
+@router.post(
+    "/{run_id}/workflow/confirm-requirements",
+    response_model=DecisionWorkflow,
+    responses=ERRORS,
+)
+def confirm_requirements(
+    run_id: UUID4,
+    request: Request,
+    idempotency_key: str = Header(min_length=1, max_length=128),
+) -> DecisionWorkflow:
+    return _service(request).confirm_requirements(
+        str(run_id), command_id=idempotency_key,
+    )
+
+
+@router.post(
+    "/{run_id}/workflow/confirm-criteria",
+    response_model=DecisionWorkflow,
+    responses=ERRORS,
+)
+def confirm_criteria(
+    run_id: UUID4,
+    body: CriteriaConfirmationRequest,
+    request: Request,
+    idempotency_key: str = Header(min_length=1, max_length=128),
+) -> DecisionWorkflow:
+    return _service(request).confirm_criteria(
+        str(run_id),
+        command_id=idempotency_key,
+        contract_id=body.contract_id,
+    )
+
+
+@router.get(
+    "/{run_id}/workflow/research-plan", response_model=ResearchPlan, responses=ERRORS,
+)
+def get_workflow_research_plan(run_id: UUID4, request: Request) -> ResearchPlan:
+    return _service(request).workflow_research_plan(str(run_id))
+
+
+@router.get(
+    "/{run_id}/workflow/events", response_model=WorkflowEventList, responses=ERRORS,
+)
+def get_workflow_events(run_id: UUID4, request: Request) -> WorkflowEventList:
+    return _service(request).workflow_events(str(run_id))
 
 
 @router.get("/{run_id}/report", response_model=TechScoutReportProjection, responses=ERRORS)

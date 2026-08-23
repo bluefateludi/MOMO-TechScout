@@ -29,6 +29,11 @@ from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.techscout_execution import StageServicesFactory, TechScoutSingleRunExecutor
 from paper_agent.web.task_queue import RunQueue
 from paper_agent.web.verified_composition import make_verified_services_factory
+from paper_agent.techscout.workflow import (
+    DecisionWorkflowService,
+    DeterministicCriteriaDraftPlanner,
+    SqliteDecisionWorkflowStore,
+)
 
 
 def _error(code: str, message: str, details: dict[str, object] | None = None, status: int = 500) -> JSONResponse:
@@ -90,8 +95,12 @@ def create_app(
 
     app = FastAPI(title="MOMO TechScout Web API", version="2.0.0", lifespan=lifespan)
     app.state.run_service = RunService(registry, artifacts, executor, queue_capacity)
+    workflow = DecisionWorkflowService(
+        SqliteDecisionWorkflowStore(state_root / "run-registry.sqlite3"),
+        planner=DeterministicCriteriaDraftPlanner(),
+    )
     app.state.techscout_service = TechScoutProjectionService(
-        registry, techscout_executor, output_root, queue_capacity,
+        registry, techscout_executor, output_root, queue_capacity, workflow,
     )
     app.include_router(router)
     app.include_router(techscout_router)

@@ -214,6 +214,22 @@
         "title": "CreateRunRequest",
         "type": "object"
       },
+      "CriteriaConfirmationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Contract Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_id"
+        ],
+        "title": "CriteriaConfirmationRequest",
+        "type": "object"
+      },
       "DecisionContext": {
         "additionalProperties": false,
         "description": "The user-owned facts and criteria that frame one technology decision.",
@@ -342,6 +358,80 @@
         "title": "DecisionContext",
         "type": "object"
       },
+      "DecisionWorkflow": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision_context": {
+            "$ref": "#/components/schemas/DecisionContext"
+          },
+          "requirements": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/UserRequirement"
+            },
+            "title": "Requirements",
+            "type": "array"
+          },
+          "requirements_confirmed": {
+            "default": false,
+            "title": "Requirements Confirmed",
+            "type": "boolean"
+          },
+          "research_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "selection_criteria": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionCriteriaContract"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/WorkflowState"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "state",
+          "version",
+          "decision_context",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DecisionWorkflow",
+        "type": "object"
+      },
       "DocumentRecord": {
         "additionalProperties": false,
         "properties": {
@@ -461,6 +551,39 @@
           "error"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "EvaluationCriterion": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "requirement_ids": {
+            "items": {
+              "minLength": 3,
+              "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Requirement Ids",
+            "type": "array"
+          },
+          "statement": {
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "requirement_ids",
+          "statement"
+        ],
+        "title": "EvaluationCriterion",
         "type": "object"
       },
       "EvidenceList": {
@@ -611,6 +734,39 @@
           "source"
         ],
         "title": "EvidenceView",
+        "type": "object"
+      },
+      "HardConstraint": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "requirement_ids": {
+            "items": {
+              "minLength": 3,
+              "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Requirement Ids",
+            "type": "array"
+          },
+          "statement": {
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "requirement_ids",
+          "statement"
+        ],
+        "title": "HardConstraint",
         "type": "object"
       },
       "ManifestProjection": {
@@ -895,6 +1051,39 @@
         "title": "PaperSummary",
         "type": "object"
       },
+      "PocCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "minLength": 1,
+            "title": "Check",
+            "type": "string"
+          },
+          "item_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "requirement_ids": {
+            "items": {
+              "minLength": 3,
+              "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Requirement Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_id",
+          "requirement_ids",
+          "check"
+        ],
+        "title": "PocCheck",
+        "type": "object"
+      },
       "RejectedCriticalClaim": {
         "additionalProperties": false,
         "properties": {
@@ -975,6 +1164,132 @@
           "degradations"
         ],
         "title": "ReportResponse",
+        "type": "object"
+      },
+      "RequirementKind": {
+        "enum": [
+          "hard_constraint",
+          "evaluation_criterion",
+          "unknown"
+        ],
+        "title": "RequirementKind",
+        "type": "string"
+      },
+      "RequirementsReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/UserRequirementInput"
+            },
+            "maxItems": 40,
+            "minItems": 1,
+            "title": "Requirements",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requirements"
+        ],
+        "title": "RequirementsReviewRequest",
+        "type": "object"
+      },
+      "ResearchPlan": {
+        "additionalProperties": false,
+        "properties": {
+          "criteria_contract_id": {
+            "anyOf": [
+              {
+                "minLength": 3,
+                "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criteria Contract Id"
+          },
+          "investigation_dimensions": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Investigation Dimensions",
+            "type": "array"
+          },
+          "plan_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "planned_evidence": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Planned Evidence",
+            "type": "array"
+          },
+          "poc_intent": {
+            "minLength": 1,
+            "title": "Poc Intent",
+            "type": "string"
+          },
+          "required_capabilities": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Required Capabilities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plan_id",
+          "investigation_dimensions",
+          "required_capabilities",
+          "planned_evidence",
+          "poc_intent"
+        ],
+        "title": "ResearchPlan",
+        "type": "object"
+      },
+      "ResearchQuestion": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "requirement_ids": {
+            "items": {
+              "minLength": 3,
+              "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Requirement Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_id",
+          "requirement_ids",
+          "question"
+        ],
+        "title": "ResearchQuestion",
         "type": "object"
       },
       "RetrievalRecord": {
@@ -1615,6 +1930,77 @@
           "chunk_overlap_words"
         ],
         "title": "SafeRunSettings",
+        "type": "object"
+      },
+      "SelectionCriteriaContract": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Contract Id",
+            "type": "string"
+          },
+          "evaluation_criteria": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationCriterion"
+            },
+            "title": "Evaluation Criteria",
+            "type": "array"
+          },
+          "hard_constraints": {
+            "items": {
+              "$ref": "#/components/schemas/HardConstraint"
+            },
+            "title": "Hard Constraints",
+            "type": "array"
+          },
+          "poc_checks": {
+            "items": {
+              "$ref": "#/components/schemas/PocCheck"
+            },
+            "title": "Poc Checks",
+            "type": "array"
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/UserRequirement"
+            },
+            "minItems": 1,
+            "title": "Requirements",
+            "type": "array"
+          },
+          "research_questions": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchQuestion"
+            },
+            "title": "Research Questions",
+            "type": "array"
+          },
+          "run_id": {
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "unknowns": {
+            "items": {
+              "$ref": "#/components/schemas/Unknown"
+            },
+            "title": "Unknowns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "contract_id",
+          "run_id",
+          "requirements",
+          "hard_constraints",
+          "evaluation_criteria",
+          "unknowns",
+          "research_questions",
+          "poc_checks"
+        ],
+        "title": "SelectionCriteriaContract",
         "type": "object"
       },
       "TechScoutApprovalProjection": {
@@ -2719,6 +3105,39 @@
         "title": "TracePage",
         "type": "object"
       },
+      "Unknown": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "requirement_ids": {
+            "items": {
+              "minLength": 3,
+              "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Requirement Ids",
+            "type": "array"
+          },
+          "statement": {
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "requirement_ids",
+          "statement"
+        ],
+        "title": "Unknown",
+        "type": "object"
+      },
       "UsageTotals": {
         "additionalProperties": false,
         "properties": {
@@ -2775,6 +3194,167 @@
         ],
         "title": "UsageTotals",
         "type": "object"
+      },
+      "UserRequirement": {
+        "additionalProperties": false,
+        "description": "An upstream, user-owned atomic requirement.\n\nDirection-one integration point: intake may construct this value from its\nDecision Context without this module depending on persistence or Web types.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RequirementKind"
+          },
+          "requirement_id": {
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "statement": {
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "kind",
+          "statement"
+        ],
+        "title": "UserRequirement",
+        "type": "object"
+      },
+      "UserRequirementInput": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "hard_constraint",
+              "evaluation_criterion",
+              "unknown"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "requirement_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "statement": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "kind",
+          "statement"
+        ],
+        "title": "UserRequirementInput",
+        "type": "object"
+      },
+      "WorkflowEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command Id"
+          },
+          "event_type": {
+            "$ref": "#/components/schemas/WorkflowEventType"
+          },
+          "from_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "to_state": {
+            "$ref": "#/components/schemas/WorkflowState"
+          },
+          "workflow_version": {
+            "minimum": 1.0,
+            "title": "Workflow Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "run_id",
+          "event_type",
+          "to_state",
+          "workflow_version",
+          "occurred_at"
+        ],
+        "title": "WorkflowEvent",
+        "type": "object"
+      },
+      "WorkflowEventList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEvent"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "WorkflowEventList",
+        "type": "object"
+      },
+      "WorkflowEventType": {
+        "enum": [
+          "workflow.created",
+          "requirements.review_started",
+          "requirements.review_revised",
+          "requirements.confirmed",
+          "criteria.confirmed"
+        ],
+        "title": "WorkflowEventType",
+        "type": "string"
+      },
+      "WorkflowState": {
+        "enum": [
+          "draft_context",
+          "requirements_review",
+          "criteria_confirmation",
+          "research_ready"
+        ],
+        "title": "WorkflowState",
+        "type": "string"
       }
     }
   },
@@ -3670,6 +4250,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3749,6 +4339,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3811,6 +4411,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -3875,6 +4485,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3937,6 +4557,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -4010,6 +4640,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -4073,6 +4713,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -4135,6 +4785,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -4208,6 +4868,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -4270,6 +4940,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -4363,6 +5043,16 @@
             },
             "description": "Not Found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -4385,6 +5075,497 @@
           }
         },
         "summary": "Get Trace",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/workflow": {
+      "get": {
+        "operationId": "get_workflow_api_v2_runs__run_id__workflow_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Workflow",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/workflow/confirm-criteria": {
+      "post": {
+        "operationId": "confirm_criteria_api_v2_runs__run_id__workflow_confirm_criteria_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CriteriaConfirmationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Confirm Criteria",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/workflow/confirm-requirements": {
+      "post": {
+        "operationId": "confirm_requirements_api_v2_runs__run_id__workflow_confirm_requirements_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Confirm Requirements",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/workflow/events": {
+      "get": {
+        "operationId": "get_workflow_events_api_v2_runs__run_id__workflow_events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowEventList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Workflow Events",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/workflow/requirements-review": {
+      "post": {
+        "operationId": "review_requirements_api_v2_runs__run_id__workflow_requirements_review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequirementsReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Review Requirements",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/workflow/research-plan": {
+      "get": {
+        "operationId": "get_workflow_research_plan_api_v2_runs__run_id__workflow_research_plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchPlan"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Workflow Research Plan",
         "tags": [
           "techscout-runs"
         ]

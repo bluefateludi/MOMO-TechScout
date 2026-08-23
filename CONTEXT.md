@@ -12,6 +12,22 @@ _Avoid_: Project context, research context
 An atomic need, preference, or unresolved point supplied or confirmed by the user.
 _Avoid_: Model assumption, inferred mandate
 
+**Decision Workflow**:
+The auditable progression of one Decision Context through User Requirement review and Selection Criteria confirmation until research is allowed to begin.
+_Avoid_: Research run, autonomous planning loop
+
+**Requirements Review**:
+The stage in which the user inspects the atomic User Requirements and their proposed categories before confirming them.
+_Avoid_: Planner approval, inferred requirements
+
+**Criteria Confirmation**:
+The stage in which the user inspects Selection Criteria and the linked Research Plan derived from confirmed User Requirements.
+_Avoid_: Automatic research start, model confirmation
+
+**Research Ready**:
+The state reached only after the user has confirmed both User Requirements and Selection Criteria; only this state permits research execution.
+_Avoid_: Queued, planned, implicitly approved
+
 **Must-have**:
 A user-confirmed, non-negotiable condition that a viable candidate must satisfy; research may assess it but cannot create it.
 _Avoid_: Hard constraint, preference, planner rule

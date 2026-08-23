@@ -104,6 +104,20 @@ class TechScoutCreateRunRequest(StrictModel):
         }
 
 
+class UserRequirementInput(StrictModel):
+    requirement_id: str = Field(min_length=1, max_length=160)
+    kind: Literal["hard_constraint", "evaluation_criterion", "unknown"]
+    statement: str = Field(min_length=1, max_length=1000)
+
+
+class RequirementsReviewRequest(StrictModel):
+    requirements: list[UserRequirementInput] = Field(min_length=1, max_length=40)
+
+
+class CriteriaConfirmationRequest(StrictModel):
+    contract_id: str = Field(min_length=1, max_length=160)
+
+
 class TechScoutProgress(StrictModel):
     stage: TechScoutStage
     completed_stages: list[Literal["plan", "research", "verify", "decide"]]

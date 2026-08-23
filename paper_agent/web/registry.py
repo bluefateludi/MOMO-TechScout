@@ -95,6 +95,7 @@ class TechScoutRegistryRun(StrictModel):
     fencing_token: int = 0
     error_kind: ErrorKind | None = None
     error_code: str | None = None
+    workflow_required: bool = False
 
 
 class RunRegistry:
@@ -118,7 +119,7 @@ class RunRegistry:
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version > 6:
+            if version > 7:
                 raise RuntimeError("run registry schema is newer than this server")
             db.execute("BEGIN IMMEDIATE")
             db.execute("""
@@ -256,7 +257,20 @@ class RunRegistry:
                 db.execute(
                     "ALTER TABLE techscout_runs ADD COLUMN lease_expires_at TEXT"
                 )
-            db.execute("PRAGMA user_version=6")
+            if version < 7:
+                db.execute(
+                    "ALTER TABLE techscout_runs ADD COLUMN workflow_required INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS decision_workflows (
+                      run_id TEXT PRIMARY KEY,
+                      version INTEGER NOT NULL,
+                      state TEXT NOT NULL,
+                      context_hash TEXT NOT NULL,
+                      snapshot_json TEXT NOT NULL
+                    )
+                """)
+            db.execute("PRAGMA user_version=7")
             db.commit()
 
     def ready(self) -> bool:
@@ -281,6 +295,7 @@ class RunRegistry:
         idempotency_key: str | None = None,
         max_attempts: int = 2,
         deadline_seconds: int | None = None,
+        workflow_required: bool = False,
     ) -> tuple[TechScoutRegistryRun, bool]:
         now = utc_now().isoformat()
         request_json = json.dumps(
@@ -335,13 +350,13 @@ class RunRegistry:
                      id,status,stage,request_json,progress_json,projection_path,
                      created_at,started_at,finished_at,updated_at,idempotency_key,
                      request_hash,deadline_at,attempt_count,max_attempts,cancel_requested,
-                     worker_id,error_kind,error_code
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     worker_id,error_kind,error_code,workflow_required
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     run_id, "queued", "plan", request_json,
                     progress.model_dump_json(), None, now, None, None, now,
                     idempotency_key, request_hash, deadline, 0, max_attempts, 0,
-                    None, None, None,
+                    None, None, None, int(workflow_required),
                 ),
             )
             self._append_event_in_transaction(
@@ -370,7 +385,16 @@ class RunRegistry:
     def active_techscout(self) -> list[TechScoutRegistryRun]:
         with self._connect() as db:
             rows = db.execute(
-                "SELECT * FROM techscout_runs WHERE status IN ('queued','running') ORDER BY created_at,id"
+                """SELECT * FROM techscout_runs
+                   WHERE status='running' OR (
+                     status='queued' AND (
+                       workflow_required=0 OR EXISTS (
+                         SELECT 1 FROM decision_workflows workflow
+                         WHERE workflow.run_id=techscout_runs.id
+                           AND workflow.state='research_ready'
+                       )
+                     )
+                   ) ORDER BY created_at,id"""
             ).fetchall()
         return [self._parse_techscout(row) for row in rows]
 
@@ -378,7 +402,14 @@ class RunRegistry:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT id FROM techscout_runs WHERE status='queued' ORDER BY created_at,id LIMIT 1"
+                """SELECT id FROM techscout_runs
+                   WHERE status='queued' AND (
+                     workflow_required=0 OR EXISTS (
+                       SELECT 1 FROM decision_workflows workflow
+                       WHERE workflow.run_id=techscout_runs.id
+                         AND workflow.state='research_ready'
+                     )
+                   ) ORDER BY created_at,id LIMIT 1"""
             ).fetchone()
             if row is None:
                 db.rollback()
@@ -1138,6 +1169,7 @@ class RunRegistry:
             ),
             fencing_token=row["fencing_token"],
             error_kind=row["error_kind"], error_code=row["error_code"],
+            workflow_required=bool(row["workflow_required"]),
         )
 
     @staticmethod

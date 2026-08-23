@@ -64,6 +64,32 @@ def _wait_terminal(client: TestClient, run_id: str, hard_bound: float = 120) -> 
     pytest.fail(f"TechScout run exceeded {hard_bound}s hard bound")
 
 
+def _confirm_workflow(client: TestClient, run_id: str, body: dict[str, object]) -> None:
+    requirements = [
+        {
+            "requirement_id": f"requirement:must-have-{index}",
+            "kind": "hard_constraint",
+            "statement": statement,
+        }
+        for index, statement in enumerate(body["hard_constraints"])
+    ]
+    assert client.post(
+        f"/api/v2/runs/{run_id}/workflow/requirements-review",
+        json={"requirements": requirements},
+        headers={"Idempotency-Key": "e2e-review"},
+    ).status_code == 200
+    criteria = client.post(
+        f"/api/v2/runs/{run_id}/workflow/confirm-requirements",
+        headers={"Idempotency-Key": "e2e-requirements"},
+    )
+    assert criteria.status_code == 200
+    assert client.post(
+        f"/api/v2/runs/{run_id}/workflow/confirm-criteria",
+        json={"contract_id": criteria.json()["selection_criteria"]["contract_id"]},
+        headers={"Idempotency-Key": "e2e-criteria"},
+    ).status_code == 200
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "expected_status", "expected_verdict", "recovery_attempted"),
     [
@@ -90,6 +116,7 @@ def test_frozen_wave2_create_poll_trace_and_artifacts(
         created = client.post("/api/v2/runs", json=body)
         assert created.status_code == 202
         run_id = created.json()["id"]
+        _confirm_workflow(client, run_id, body)
 
         detail = _wait_terminal(client, run_id)
         assert detail["status"] == expected_status
@@ -198,11 +225,13 @@ def test_fast_and_verified_use_disjoint_stage_service_factories(tmp_path: Path) 
     )
     with TestClient(app) as client:
         fast = client.post("/api/v2/runs", json=body)
+        _confirm_workflow(client, fast.json()["id"], body)
         assert _wait_terminal(client, fast.json()["id"])["synthetic"] is True
         assert calls == []
 
         body["mode"] = "verified"
         verified = client.post("/api/v2/runs", json=body)
+        _confirm_workflow(client, verified.json()["id"], body)
         detail = _wait_terminal(client, verified.json()["id"])
         assert calls == ["verified"]
         assert detail["synthetic"] is False
@@ -221,6 +250,7 @@ def test_unsupported_candidate_remains_research_only_without_borrowed_recipe(
     with TestClient(app) as client:
         created = client.post("/api/v2/runs", json=body)
         run_id = created.json()["id"]
+        _confirm_workflow(client, run_id, body)
         detail = _wait_terminal(client, run_id)
         assert detail["status"] == "completed_with_limitations"
         assert detail["candidates"][0]["support_level"] == "research_only"
@@ -243,6 +273,7 @@ def test_shortlist_tie_break_selects_first_eligible_not_absolute_first(
     with TestClient(app) as client:
         created = client.post("/api/v2/runs", json=body)
         run_id = created.json()["id"]
+        _confirm_workflow(client, run_id, body)
         detail = _wait_terminal(client, run_id)
         assert detail["status"] == "completed"
         report = client.get(f"/api/v2/runs/{run_id}/report").json()

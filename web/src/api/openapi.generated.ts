@@ -312,6 +312,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/runs/{run_id}/workflow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workflow */
+        get: operations["get_workflow_api_v2_runs__run_id__workflow_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/runs/{run_id}/workflow/confirm-criteria": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Criteria */
+        post: operations["confirm_criteria_api_v2_runs__run_id__workflow_confirm_criteria_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/runs/{run_id}/workflow/confirm-requirements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Requirements */
+        post: operations["confirm_requirements_api_v2_runs__run_id__workflow_confirm_requirements_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/runs/{run_id}/workflow/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workflow Events */
+        get: operations["get_workflow_events_api_v2_runs__run_id__workflow_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/runs/{run_id}/workflow/requirements-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Review Requirements */
+        post: operations["review_requirements_api_v2_runs__run_id__workflow_requirements_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/runs/{run_id}/workflow/research-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workflow Research Plan */
+        get: operations["get_workflow_research_plan_api_v2_runs__run_id__workflow_research_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -387,6 +489,11 @@ export interface components {
             question: string;
             retrieval: components["schemas"]["RetrievalRequest"];
         };
+        /** CriteriaConfirmationRequest */
+        CriteriaConfirmationRequest: {
+            /** Contract Id */
+            contract_id: string;
+        };
         /**
          * DecisionContext
          * @description The user-owned facts and criteria that frame one technology decision.
@@ -440,6 +547,37 @@ export interface components {
              */
             use_cases: string[];
         };
+        /** DecisionWorkflow */
+        DecisionWorkflow: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            decision_context: components["schemas"]["DecisionContext"];
+            /**
+             * Requirements
+             * @default []
+             */
+            requirements: components["schemas"]["UserRequirement"][];
+            /**
+             * Requirements Confirmed
+             * @default false
+             */
+            requirements_confirmed: boolean;
+            research_plan?: components["schemas"]["ResearchPlan"] | null;
+            /** Run Id */
+            run_id: string;
+            selection_criteria?: components["schemas"]["SelectionCriteriaContract"] | null;
+            state: components["schemas"]["WorkflowState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
+        };
         /** DocumentRecord */
         DocumentRecord: {
             /** Content Sha256 */
@@ -485,6 +623,15 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
         };
+        /** EvaluationCriterion */
+        EvaluationCriterion: {
+            /** Item Id */
+            item_id: string;
+            /** Requirement Ids */
+            requirement_ids: string[];
+            /** Statement */
+            statement: string;
+        };
         /** EvidenceList */
         EvidenceList: {
             /** Items */
@@ -522,6 +669,15 @@ export interface components {
             /** Section */
             section?: string | null;
             source: components["schemas"]["EvidenceSource"];
+        };
+        /** HardConstraint */
+        HardConstraint: {
+            /** Item Id */
+            item_id: string;
+            /** Requirement Ids */
+            requirement_ids: string[];
+            /** Statement */
+            statement: string;
         };
         /** ManifestProjection */
         ManifestProjection: {
@@ -612,6 +768,15 @@ export interface components {
             /** Year */
             year?: number | null;
         };
+        /** PocCheck */
+        PocCheck: {
+            /** Check */
+            check: string;
+            /** Item Id */
+            item_id: string;
+            /** Requirement Ids */
+            requirement_ids: string[];
+        };
         /** RejectedCriticalClaim */
         RejectedCriticalClaim: {
             /** Evidence Ids */
@@ -646,6 +811,40 @@ export interface components {
              * @enum {string}
              */
             status: "completed" | "completed_with_degradation";
+        };
+        /**
+         * RequirementKind
+         * @enum {string}
+         */
+        RequirementKind: "hard_constraint" | "evaluation_criterion" | "unknown";
+        /** RequirementsReviewRequest */
+        RequirementsReviewRequest: {
+            /** Requirements */
+            requirements: components["schemas"]["UserRequirementInput"][];
+        };
+        /** ResearchPlan */
+        ResearchPlan: {
+            /** Criteria Contract Id */
+            criteria_contract_id?: string | null;
+            /** Investigation Dimensions */
+            investigation_dimensions: string[];
+            /** Plan Id */
+            plan_id: string;
+            /** Planned Evidence */
+            planned_evidence: string[];
+            /** Poc Intent */
+            poc_intent: string;
+            /** Required Capabilities */
+            required_capabilities: string[];
+        };
+        /** ResearchQuestion */
+        ResearchQuestion: {
+            /** Item Id */
+            item_id: string;
+            /** Question */
+            question: string;
+            /** Requirement Ids */
+            requirement_ids: string[];
         };
         /** RetrievalRecord */
         RetrievalRecord: {
@@ -861,6 +1060,25 @@ export interface components {
              * @enum {string}
              */
             retrieval_mode: "auto" | "lexical" | "hybrid";
+        };
+        /** SelectionCriteriaContract */
+        SelectionCriteriaContract: {
+            /** Contract Id */
+            contract_id: string;
+            /** Evaluation Criteria */
+            evaluation_criteria: components["schemas"]["EvaluationCriterion"][];
+            /** Hard Constraints */
+            hard_constraints: components["schemas"]["HardConstraint"][];
+            /** Poc Checks */
+            poc_checks: components["schemas"]["PocCheck"][];
+            /** Requirements */
+            requirements: components["schemas"]["UserRequirement"][];
+            /** Research Questions */
+            research_questions: components["schemas"]["ResearchQuestion"][];
+            /** Run Id */
+            run_id: string;
+            /** Unknowns */
+            unknowns: components["schemas"]["Unknown"][];
         };
         /** TechScoutApprovalProjection */
         TechScoutApprovalProjection: {
@@ -1225,6 +1443,15 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** Unknown */
+        Unknown: {
+            /** Item Id */
+            item_id: string;
+            /** Requirement Ids */
+            requirement_ids: string[];
+            /** Statement */
+            statement: string;
+        };
         /** UsageTotals */
         UsageTotals: {
             /** Completion Tokens */
@@ -1238,6 +1465,66 @@ export interface components {
             /** Total Tokens */
             total_tokens?: number | null;
         };
+        /**
+         * UserRequirement
+         * @description An upstream, user-owned atomic requirement.
+         *
+         *     Direction-one integration point: intake may construct this value from its
+         *     Decision Context without this module depending on persistence or Web types.
+         */
+        UserRequirement: {
+            kind: components["schemas"]["RequirementKind"];
+            /** Requirement Id */
+            requirement_id: string;
+            /** Statement */
+            statement: string;
+        };
+        /** UserRequirementInput */
+        UserRequirementInput: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "hard_constraint" | "evaluation_criterion" | "unknown";
+            /** Requirement Id */
+            requirement_id: string;
+            /** Statement */
+            statement: string;
+        };
+        /** WorkflowEvent */
+        WorkflowEvent: {
+            /** Command Id */
+            command_id?: string | null;
+            event_type: components["schemas"]["WorkflowEventType"];
+            from_state?: components["schemas"]["WorkflowState"] | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Run Id */
+            run_id: string;
+            /** Sequence */
+            sequence: number;
+            to_state: components["schemas"]["WorkflowState"];
+            /** Workflow Version */
+            workflow_version: number;
+        };
+        /** WorkflowEventList */
+        WorkflowEventList: {
+            /** Items */
+            items: components["schemas"]["WorkflowEvent"][];
+        };
+        /**
+         * WorkflowEventType
+         * @enum {string}
+         */
+        WorkflowEventType: "workflow.created" | "requirements.review_started" | "requirements.review_revised" | "requirements.confirmed" | "criteria.confirmed";
+        /**
+         * WorkflowState
+         * @enum {string}
+         */
+        WorkflowState: "draft_context" | "requirements_review" | "criteria_confirmation" | "research_ready";
     };
     responses: never;
     parameters: never;
@@ -1939,6 +2226,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -1985,6 +2281,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2041,6 +2346,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -2090,6 +2404,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -2132,6 +2455,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2189,6 +2521,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -2238,6 +2579,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -2280,6 +2630,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2337,6 +2696,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Unprocessable Entity */
             422: {
                 headers: {
@@ -2379,6 +2747,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2431,6 +2808,377 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_workflow_api_v2_runs__run_id__workflow_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionWorkflow"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_criteria_api_v2_runs__run_id__workflow_confirm_criteria_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CriteriaConfirmationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionWorkflow"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    confirm_requirements_api_v2_runs__run_id__workflow_confirm_requirements_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionWorkflow"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_workflow_events_api_v2_runs__run_id__workflow_events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowEventList"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    review_requirements_api_v2_runs__run_id__workflow_requirements_review_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequirementsReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionWorkflow"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_workflow_research_plan_api_v2_runs__run_id__workflow_research_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchPlan"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

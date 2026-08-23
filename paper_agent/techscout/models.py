@@ -153,6 +153,7 @@ class ResearchRequest(TechScoutModel):
 
 class ResearchPlan(TechScoutModel):
     plan_id: StableId
+    criteria_contract_id: StableId | None = None
     investigation_dimensions: tuple[NonEmptyStr, ...] = Field(min_length=1)
     required_capabilities: tuple[NonEmptyStr, ...] = Field(min_length=1)
     planned_evidence: tuple[NonEmptyStr, ...] = Field(min_length=1)
