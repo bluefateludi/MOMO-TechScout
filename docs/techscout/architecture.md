@@ -63,7 +63,7 @@ Raw pages, unrelated candidates, secrets, and arbitrary repository content are n
 
 1. A terminal manifest and its immutable artifact hashes are run authority.
 2. The sealed local Trace is execution/provenance authority, subject to its allowlisted schema and sanitizer.
-3. SQLite stores queue, discovery, progress, and event projections; it does not rewrite the immutable artifacts.
+3. SQLite stores authoritative run status, discovery, progress, idempotency, attempts, deadlines, cancellation, and event projections; it does not rewrite the immutable artifacts. The default local composition uses an in-memory dispatch queue. Optional Redis-backed deployment uses Redis only for dispatch, leases, heartbeats, rate limiting, and dead-letter routing, with at-least-once delivery.
 4. Synthetic fixtures establish deterministic contract behavior only.
 5. A sealed non-synthetic evaluation package, after offline verification, is the required authority for model/product-effect metrics such as Task Success, Recall, Token, and Cost. Browser acceptance and scoped test/CI records remain separate authorities for engineering-delivery claims.
 

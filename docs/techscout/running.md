@@ -32,6 +32,11 @@ techscout serve --host 0.0.0.0 --allow-network
 
 That opt-in exposes an unauthenticated local product and must be protected by the operator's network boundary. The compatibility command `python -m paper_agent.web` remains available. The installed `paper-agent` console script still addresses the historical Scholar workflow.
 
+For an optional API/worker process split backed by Redis, see
+[Backend reliability](backend-reliability.md). That mode is explicitly
+at-least-once: the SQLite Registry remains the status authority while Redis only
+provides dispatch, leases, heartbeats, rate limiting, and dead-letter routing.
+
 ## Start with Docker Compose
 
 Prerequisites: Docker Engine with Docker Compose v2 and a local checkout.

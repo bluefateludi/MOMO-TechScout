@@ -33,6 +33,8 @@ def test_serve_uses_loopback_defaults_and_explains_status(monkeypatch) -> None:
         "output_root": cli_module.Path("outputs"),
         "dev_origins": (),
         "allow_network": False,
+        "redis_url": None,
+        "queue_capacity": 100,
     }]
     assert "Fast Demo: frozen synthetic evidence" in result.output
     assert "Verified: completed_with_limitations" in result.output

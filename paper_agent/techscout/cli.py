@@ -45,6 +45,14 @@ def serve(
         bool,
         typer.Option(help="Allow an unauthenticated non-loopback bind."),
     ] = False,
+    redis_url: Annotated[
+        str | None,
+        typer.Option(help="Redis URL; dispatch runs to a separate techscout-worker."),
+    ] = None,
+    queue_capacity: Annotated[
+        int,
+        typer.Option(min=1, help="Maximum queued plus leased TechScout runs."),
+    ] = 100,
 ) -> None:
     """Serve the local Web UI and API with a loopback-only default."""
     try:
@@ -64,6 +72,8 @@ def serve(
         output_root=output_root,
         dev_origins=tuple(dev_origin or ()),
         allow_network=allow_network,
+        redis_url=redis_url,
+        queue_capacity=queue_capacity,
     )
 
 

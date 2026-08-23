@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Header, Query, Request
 from pydantic import UUID4
 
 from paper_agent.web.api_models import ErrorResponse
@@ -28,8 +28,20 @@ def _service(request: Request) -> TechScoutProjectionService:
 
 
 @router.post("", response_model=TechScoutRunSummary, status_code=202, responses=ERRORS)
-def create_run(body: TechScoutCreateRunRequest, request: Request) -> TechScoutRunSummary:
-    return _service(request).create(body)
+def create_run(
+    body: TechScoutCreateRunRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, min_length=1, max_length=128),
+) -> TechScoutRunSummary:
+    subject = request.client.host if request.client else "local"
+    return _service(request).create(
+        body, idempotency_key=idempotency_key, rate_subject=subject,
+    )
+
+
+@router.post("/{run_id}/cancel", response_model=TechScoutRunDetail, responses=ERRORS)
+def cancel_run(run_id: UUID4, request: Request) -> TechScoutRunDetail:
+    return _service(request).cancel(str(run_id))
 
 
 @router.get("", response_model=TechScoutRunList, responses=ERRORS)

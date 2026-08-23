@@ -2235,7 +2235,11 @@
               "running",
               "completed",
               "completed_with_limitations",
-              "failed"
+              "failed",
+              "cancelled",
+              "timed_out",
+              "interrupted",
+              "dead_letter"
             ],
             "title": "Status",
             "type": "string"
@@ -2349,7 +2353,11 @@
               "running",
               "completed",
               "completed_with_limitations",
-              "failed"
+              "failed",
+              "cancelled",
+              "timed_out",
+              "interrupted",
+              "dead_letter"
             ],
             "title": "Status",
             "type": "string"
@@ -3466,6 +3474,26 @@
       },
       "post": {
         "operationId": "create_run_api_v2_runs_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3582,6 +3610,69 @@
           }
         },
         "summary": "Get Run",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_run_api_v2_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TechScoutRunDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Cancel Run",
         "tags": [
           "techscout-runs"
         ]
