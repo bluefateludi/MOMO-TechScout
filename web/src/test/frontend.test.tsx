@@ -36,6 +36,8 @@ describe("TechScout task input", () => {
   });
   it("captures environment, hard constraints, candidates, and mode", async () => {
     render(<MemoryRouter><HomePage/></MemoryRouter>);
+    expect(screen.getByRole("link", { name: /open the 90-second demo/i })).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}`);
+    expect(screen.getByText(/4-stage run/i)).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /python version/i })).toHaveValue("3.11");
     expect(screen.getByRole("textbox", { name: /hard constraints/i })).toHaveValue("local persistence\nmetadata equality filtering");
     expect(screen.getByRole("textbox", { name: /candidate shortlist/i })).toHaveValue("Chroma, Qdrant Local, pgvector");
@@ -56,6 +58,9 @@ describe("fixture-backed TechScout views", () => {
   it("renders the four-stage progress, candidate, recovery, approval, and collapsed Trace", async () => {
     render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}`]}><Routes><Route path="/runs/:id" element={<RunPage/>}/></Routes></MemoryRouter>);
     expect(await screen.findByText(techScoutRun.question)).toBeInTheDocument();
+    const reportLink = screen.getByRole("link", { name: /open decision report/i });
+    expect(reportLink).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}/report`);
+    expect(reportLink.closest("header")).toHaveClass("run-title");
     for (const stage of ["Plan", "Research", "Verify", "Decide"]) expect(screen.getByText(stage)).toBeInTheDocument();
     expect(screen.getByText(/not needed · 0\/1/i)).toBeInTheDocument();
     expect(screen.getByText(/not required/i)).toBeInTheDocument();

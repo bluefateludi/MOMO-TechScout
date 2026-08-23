@@ -25,7 +25,7 @@ export function HomePage() {
     } catch (caught) { setError(caught instanceof ApiError ? caught : new ApiError(0, "connection_lost", "The local API could not be reached.")); } finally { setPending(false); }
   }
   return <>
-    <section className="tech-hero"><div><p className="eyebrow">{t("heroEye")}</p><h1>{t("heroTitleA")}<br/><em>{t("heroTitleB")}</em></h1><p className="dek">{t("heroDek")}</p></div><aside className="scope-card"><b>{t("boundary")}</b><strong>{t("vectorStores")}</strong><p>{t("boundaryBody")}</p></aside></section>
+    <section className="tech-hero"><div><p className="eyebrow">{t("heroEye")}</p><h1>{t("heroTitleA")}<br/><em>{t("heroTitleB")}</em></h1><p className="dek">{t("heroDek")}</p><div className="demo-entry"><Link to={`/runs/${TECHSCOUT_FIXTURE_ID}`}>{t("demoCta")}</Link><span>{t("demoMeta")}</span></div></div><aside className="scope-card"><b>{t("boundary")}</b><strong>{t("vectorStores")}</strong><p>{t("boundaryBody")}</p></aside></section>
     <section className="tech-desk"><form className="tech-form" onSubmit={submit}><header><span>01</span><div><p className="eyebrow">{t("newTask")}</p><h2>{t("frame")}</h2></div></header>
       <label>{t("question")}<textarea aria-label={t("question")} required minLength={3} value={form.question} onChange={(event) => setForm({ ...form, question: event.target.value })} placeholder={t("questionPlaceholder")}/></label>
       <label>{t("project")}<textarea aria-label={t("project")} required value={form.project_context} onChange={(event) => setForm({ ...form, project_context: event.target.value })}/></label>
