@@ -219,7 +219,8 @@
         "properties": {
           "contract_id": {
             "maxLength": 160,
-            "minLength": 1,
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
             "title": "Contract Id",
             "type": "string"
           }
@@ -3236,7 +3237,8 @@
           },
           "requirement_id": {
             "maxLength": 160,
-            "minLength": 1,
+            "minLength": 3,
+            "pattern": "^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._:@/*-]*$",
             "title": "Requirement Id",
             "type": "string"
           },

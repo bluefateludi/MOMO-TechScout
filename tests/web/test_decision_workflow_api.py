@@ -123,3 +123,58 @@ def test_http_workflow_reports_transition_and_idempotency_errors(tmp_path) -> No
     assert first.json() == replay.json()
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "workflow_command_conflict"
+
+
+def test_http_requirements_review_rejects_duplicate_requirement_ids(tmp_path) -> None:
+    with _client(tmp_path) as client:
+        run_id = client.post("/api/v2/runs", json=_run_body()).json()["id"]
+        body = _requirements_body()
+        body["requirements"][1]["requirement_id"] = "requirement:persistence"
+
+        response = client.post(
+            f"/api/v2/runs/{run_id}/workflow/requirements-review",
+            json=body,
+            headers={"Idempotency-Key": "duplicate-requirements"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_http_requirements_review_rejects_malformed_requirement_id(tmp_path) -> None:
+    with _client(tmp_path) as client:
+        run_id = client.post("/api/v2/runs", json=_run_body()).json()["id"]
+        body = _requirements_body()
+        body["requirements"][0]["requirement_id"] = "not-a-stable-id"
+
+        response = client.post(
+            f"/api/v2/runs/{run_id}/workflow/requirements-review",
+            json=body,
+            headers={"Idempotency-Key": "malformed-requirement"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_http_criteria_confirmation_rejects_malformed_contract_id(tmp_path) -> None:
+    with _client(tmp_path) as client:
+        run_id = client.post("/api/v2/runs", json=_run_body()).json()["id"]
+        client.post(
+            f"/api/v2/runs/{run_id}/workflow/requirements-review",
+            json=_requirements_body(),
+            headers={"Idempotency-Key": "review-before-malformed-contract"},
+        )
+        client.post(
+            f"/api/v2/runs/{run_id}/workflow/confirm-requirements",
+            headers={"Idempotency-Key": "confirm-before-malformed-contract"},
+        )
+
+        response = client.post(
+            f"/api/v2/runs/{run_id}/workflow/confirm-criteria",
+            json={"contract_id": "not-a-stable-id"},
+            headers={"Idempotency-Key": "malformed-contract"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"

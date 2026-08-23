@@ -434,8 +434,9 @@ class RunRegistry:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                """SELECT status,deadline_at,cancel_requested,lease_expires_at,
-                          attempt_count,max_attempts,worker_id,lease_token,fencing_token
+                """SELECT status,created_at,started_at,deadline_at,workflow_required,
+                          cancel_requested,lease_expires_at,attempt_count,max_attempts,
+                          worker_id,lease_token,fencing_token
                    FROM techscout_runs WHERE id=?""",
                 (run_id,),
             ).fetchone()
@@ -470,7 +471,15 @@ class RunRegistry:
                 )
                 db.commit()
                 return None
-            if datetime.fromisoformat(row["deadline_at"]) <= now:
+            deadline_at = datetime.fromisoformat(row["deadline_at"])
+            if (
+                row["status"] == "queued"
+                and row["started_at"] is None
+                and row["workflow_required"]
+            ):
+                execution_budget = deadline_at - datetime.fromisoformat(row["created_at"])
+                deadline_at = now + execution_budget
+            if deadline_at <= now:
                 progress = TechScoutProgress(
                     stage="terminal", completed_stages=[], elapsed_seconds=0,
                 ).model_dump_json()
@@ -518,14 +527,15 @@ class RunRegistry:
                 """UPDATE techscout_runs SET status='running',
                    started_at=COALESCE(started_at,?),updated_at=?,worker_id=?,
                    lease_token=?,lease_expires_at=?,fencing_token=fencing_token+1,
-                   error_kind=NULL,error_code=NULL,attempt_count=attempt_count+1
+                   deadline_at=?,error_kind=NULL,error_code=NULL,
+                   attempt_count=attempt_count+1
                    WHERE id=? AND (status='queued' OR (status='running'
                    AND fencing_token=? AND (lease_expires_at IS NULL
                    OR lease_expires_at<=?)))""",
                 (
                     now.isoformat(), now.isoformat(), worker_id, lease_token,
-                    lease_expires_at.isoformat(), run_id, row["fencing_token"],
-                    now.isoformat(),
+                    lease_expires_at.isoformat(), deadline_at.isoformat(), run_id,
+                    row["fencing_token"], now.isoformat(),
                 ),
             ).rowcount
             if changed:

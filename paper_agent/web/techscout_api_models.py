@@ -11,6 +11,7 @@ from paper_agent.techscout.decision_context import (
     EnvironmentSpec,
     flatten_decision_request,
 )
+from paper_agent.techscout.errors import StableId
 
 
 TechScoutStatus = Literal[
@@ -105,7 +106,7 @@ class TechScoutCreateRunRequest(StrictModel):
 
 
 class UserRequirementInput(StrictModel):
-    requirement_id: str = Field(min_length=1, max_length=160)
+    requirement_id: StableId = Field(max_length=160)
     kind: Literal["hard_constraint", "evaluation_criterion", "unknown"]
     statement: str = Field(min_length=1, max_length=1000)
 
@@ -113,9 +114,16 @@ class UserRequirementInput(StrictModel):
 class RequirementsReviewRequest(StrictModel):
     requirements: list[UserRequirementInput] = Field(min_length=1, max_length=40)
 
+    @model_validator(mode="after")
+    def requirement_ids_are_unique(self) -> "RequirementsReviewRequest":
+        identifiers = [item.requirement_id for item in self.requirements]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("requirement identifiers must be unique")
+        return self
+
 
 class CriteriaConfirmationRequest(StrictModel):
-    contract_id: str = Field(min_length=1, max_length=160)
+    contract_id: StableId = Field(max_length=160)
 
 
 class TechScoutProgress(StrictModel):
