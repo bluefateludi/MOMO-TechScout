@@ -13,6 +13,11 @@ from pydantic import (
 )
 from typing_extensions import Annotated, Self
 
+from paper_agent.techscout.decision_context import (
+    DecisionContext,
+    EnvironmentSpec,
+    normalize_decision_request,
+)
 from paper_agent.techscout.errors import FailureCode, RecoveryAction, StableId
 
 
@@ -93,12 +98,6 @@ class ConstraintStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
-class EnvironmentSpec(TechScoutModel):
-    python_version: NonEmptyStr
-    operating_system: NonEmptyStr
-    deployment: NonEmptyStr
-
-
 class Candidate(TechScoutModel):
     candidate_id: StableId
     name: NonEmptyStr
@@ -110,12 +109,21 @@ class Candidate(TechScoutModel):
 
 class ResearchRequest(TechScoutModel):
     run_id: StableId
-    question: NonEmptyStr
-    project_context: NonEmptyStr
-    environment: EnvironmentSpec
-    hard_constraints: tuple[NonEmptyStr, ...] = Field(min_length=1, max_length=5)
+    decision_context: DecisionContext
     candidates: tuple[Candidate, ...] = Field(default=(), max_length=3)
     mode: RunMode = RunMode.FAST
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_context(cls, value: object) -> object:
+        normalized = normalize_decision_request(value)
+        if isinstance(normalized, dict):
+            normalized = dict(normalized)
+            if isinstance(normalized.get("candidates"), list):
+                normalized["candidates"] = tuple(normalized["candidates"])
+            if isinstance(normalized.get("mode"), str):
+                normalized["mode"] = RunMode(normalized["mode"])
+        return normalized
 
     @model_validator(mode="after")
     def identifiers_and_constraints_are_unique(self) -> Self:
@@ -125,6 +133,22 @@ class ResearchRequest(TechScoutModel):
         if len(self.hard_constraints) != len(set(self.hard_constraints)):
             raise ValueError("hard constraints must be unique")
         return self
+
+    @property
+    def question(self) -> str:
+        return self.decision_context.question
+
+    @property
+    def project_context(self) -> str:
+        return self.decision_context.project_summary
+
+    @property
+    def environment(self) -> EnvironmentSpec:
+        return self.decision_context.deployment
+
+    @property
+    def hard_constraints(self) -> tuple[str, ...]:
+        return self.decision_context.must_haves
 
 
 class ResearchPlan(TechScoutModel):

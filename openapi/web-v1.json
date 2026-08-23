@@ -214,6 +214,134 @@
         "title": "CreateRunRequest",
         "type": "object"
       },
+      "DecisionContext": {
+        "additionalProperties": false,
+        "description": "The user-owned facts and criteria that frame one technology decision.",
+        "properties": {
+          "budget_constraints": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Budget Constraints",
+            "type": "array"
+          },
+          "current_stack": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Current Stack",
+            "type": "array"
+          },
+          "deployment": {
+            "$ref": "#/components/schemas/EnvironmentSpec"
+          },
+          "license_requirements": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "License Requirements",
+            "type": "array"
+          },
+          "must_haves": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Must Haves",
+            "type": "array"
+          },
+          "performance_requirements": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Performance Requirements",
+            "type": "array"
+          },
+          "preferences": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Preferences",
+            "type": "array"
+          },
+          "project_summary": {
+            "maxLength": 2000,
+            "minLength": 3,
+            "title": "Project Summary",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 1000,
+            "minLength": 3,
+            "title": "Question",
+            "type": "string"
+          },
+          "security_requirements": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Security Requirements",
+            "type": "array"
+          },
+          "team_capabilities": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Team Capabilities",
+            "type": "array"
+          },
+          "use_cases": {
+            "default": [],
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Use Cases",
+            "type": "array"
+          }
+        },
+        "required": [
+          "question",
+          "project_summary",
+          "deployment",
+          "must_haves"
+        ],
+        "title": "DecisionContext",
+        "type": "object"
+      },
       "DocumentRecord": {
         "additionalProperties": false,
         "properties": {
@@ -265,6 +393,37 @@
           "page_count"
         ],
         "title": "DocumentRecord",
+        "type": "object"
+      },
+      "EnvironmentSpec": {
+        "additionalProperties": false,
+        "description": "Runtime and deployment environment relevant to a decision.",
+        "properties": {
+          "deployment": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Deployment",
+            "type": "string"
+          },
+          "operating_system": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Operating System",
+            "type": "string"
+          },
+          "python_version": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Python Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "python_version",
+          "operating_system",
+          "deployment"
+        ],
+        "title": "EnvironmentSpec",
         "type": "object"
       },
       "ErrorBody": {
@@ -1680,12 +1839,28 @@
       "TechScoutCreateRunRequest": {
         "additionalProperties": false,
         "properties": {
+          "budget_constraints": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Budget Constraints",
+            "type": "array"
+          },
           "candidates": {
             "items": {
               "$ref": "#/components/schemas/TechScoutCandidateInput"
             },
             "maxItems": 3,
             "title": "Candidates",
+            "type": "array"
+          },
+          "current_stack": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Current Stack",
             "type": "array"
           },
           "environment": {
@@ -1700,6 +1875,14 @@
             "title": "Hard Constraints",
             "type": "array"
           },
+          "license_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "License Requirements",
+            "type": "array"
+          },
           "mode": {
             "default": "fast",
             "enum": [
@@ -1708,6 +1891,22 @@
             ],
             "title": "Mode",
             "type": "string"
+          },
+          "performance_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Performance Requirements",
+            "type": "array"
+          },
+          "preferences": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Preferences",
+            "type": "array"
           },
           "project_context": {
             "maxLength": 2000,
@@ -1720,6 +1919,30 @@
             "minLength": 3,
             "title": "Question",
             "type": "string"
+          },
+          "security_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Security Requirements",
+            "type": "array"
+          },
+          "team_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Team Capabilities",
+            "type": "array"
+          },
+          "use_cases": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Use Cases",
+            "type": "array"
           }
         },
         "required": [
@@ -1733,6 +1956,7 @@
       },
       "TechScoutEnvironmentRequest": {
         "additionalProperties": false,
+        "description": "Compatibility name for the environment projection.",
         "properties": {
           "deployment": {
             "maxLength": 120,
@@ -3808,6 +4032,69 @@
           }
         },
         "summary": "Get Candidate",
+        "tags": [
+          "techscout-runs"
+        ]
+      }
+    },
+    "/api/v2/runs/{run_id}/decision-context": {
+      "get": {
+        "operationId": "get_decision_context_api_v2_runs__run_id__decision_context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid4",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionContext"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Decision Context",
         "tags": [
           "techscout-runs"
         ]

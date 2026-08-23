@@ -3,9 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, UUID4, field_validator
+from pydantic import Field, UUID4, field_validator, model_validator
 
 from paper_agent.modeling import StrictModel
+from paper_agent.techscout.decision_context import (
+    DecisionContext,
+    EnvironmentSpec,
+    flatten_decision_request,
+)
 
 
 TechScoutStatus = Literal[
@@ -15,10 +20,8 @@ TechScoutStatus = Literal[
 TechScoutStage = Literal["plan", "research", "verify", "decide", "terminal"]
 
 
-class TechScoutEnvironmentRequest(StrictModel):
-    python_version: str = Field(min_length=1, max_length=32)
-    operating_system: str = Field(min_length=1, max_length=80)
-    deployment: str = Field(min_length=1, max_length=120)
+class TechScoutEnvironmentRequest(EnvironmentSpec):
+    """Compatibility name for the environment projection."""
 
 
 class TechScoutCandidateInput(StrictModel):
@@ -32,21 +35,73 @@ class TechScoutCreateRunRequest(StrictModel):
     project_context: str = Field(min_length=3, max_length=2000)
     environment: TechScoutEnvironmentRequest
     hard_constraints: list[str] = Field(min_length=1, max_length=5)
+    current_stack: list[str] = Field(default_factory=list, max_length=20)
+    use_cases: list[str] = Field(default_factory=list, max_length=12)
+    team_capabilities: list[str] = Field(default_factory=list, max_length=12)
+    performance_requirements: list[str] = Field(default_factory=list, max_length=12)
+    budget_constraints: list[str] = Field(default_factory=list, max_length=12)
+    security_requirements: list[str] = Field(default_factory=list, max_length=12)
+    license_requirements: list[str] = Field(default_factory=list, max_length=12)
+    preferences: list[str] = Field(default_factory=list, max_length=12)
     candidates: list[TechScoutCandidateInput] = Field(default_factory=list, max_length=3)
     mode: Literal["fast", "verified"] = "fast"
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_canonical_context(cls, value: object) -> object:
+        return flatten_decision_request(value)
 
     @field_validator("question", "project_context", mode="before")
     @classmethod
     def trim_text(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
-    @field_validator("hard_constraints")
+    @field_validator(
+        "hard_constraints",
+        "current_stack",
+        "use_cases",
+        "team_capabilities",
+        "performance_requirements",
+        "budget_constraints",
+        "security_requirements",
+        "license_requirements",
+        "preferences",
+        mode="before",
+    )
     @classmethod
-    def unique_constraints(cls, values: list[str]) -> list[str]:
-        trimmed = [value.strip() for value in values]
-        if any(not value for value in trimmed) or len(set(trimmed)) != len(trimmed):
-            raise ValueError("hard constraints must be non-empty and unique")
-        return trimmed
+    def trim_decision_items(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            return value
+        return [item.strip() if isinstance(item, str) else item for item in value]
+
+    @model_validator(mode="after")
+    def validate_decision_context(self) -> "TechScoutCreateRunRequest":
+        self.decision_context
+        return self
+
+    @property
+    def decision_context(self) -> DecisionContext:
+        return DecisionContext(
+            question=self.question,
+            project_summary=self.project_context,
+            current_stack=tuple(self.current_stack),
+            use_cases=tuple(self.use_cases),
+            deployment=EnvironmentSpec.model_validate(self.environment.model_dump()),
+            team_capabilities=tuple(self.team_capabilities),
+            performance_requirements=tuple(self.performance_requirements),
+            budget_constraints=tuple(self.budget_constraints),
+            security_requirements=tuple(self.security_requirements),
+            license_requirements=tuple(self.license_requirements),
+            must_haves=tuple(self.hard_constraints),
+            preferences=tuple(self.preferences),
+        )
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "decision_context": self.decision_context.model_dump(mode="json"),
+            "candidates": [candidate.model_dump(mode="json") for candidate in self.candidates],
+            "mode": self.mode,
+        }
 
 
 class TechScoutProgress(StrictModel):

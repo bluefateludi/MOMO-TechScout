@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from paper_agent.techscout.decision_context import DecisionContext, EnvironmentSpec
 from paper_agent.web.errors import WebError
 from paper_agent.web.task_queue import QueueFullError
 from paper_agent.web.event_cursor import decode_event_cursor, encode_event_cursor
@@ -134,6 +135,16 @@ class TechScoutProjectionService:
             approval=TechScoutApprovalProjection(required=False, status="not_required"),
             issues=[],
         )
+
+    def decision_context(self, run_id: str) -> DecisionContext:
+        if run_id == SYNTHETIC_RUN_ID:
+            return DecisionContext(
+                question=DETAIL.question,
+                project_summary=DETAIL.project_context,
+                deployment=EnvironmentSpec.model_validate(DETAIL.environment.model_dump()),
+                must_haves=tuple(DETAIL.hard_constraints),
+            )
+        return self.registry.get_techscout(run_id).request.decision_context
 
     def report(self, run_id: str) -> TechScoutReportProjection:
         if run_id == SYNTHETIC_RUN_ID:

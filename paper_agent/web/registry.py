@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import uuid
@@ -282,7 +283,9 @@ class RunRegistry:
         deadline_seconds: int | None = None,
     ) -> tuple[TechScoutRegistryRun, bool]:
         now = utc_now().isoformat()
-        request_json = request.model_dump_json()
+        request_json = json.dumps(
+            request.canonical_payload(), ensure_ascii=False, separators=(",", ":"),
+        )
         request_hash = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
         deadline = (
             utc_now() + timedelta(
@@ -296,12 +299,29 @@ class RunRegistry:
             db.execute("BEGIN IMMEDIATE")
             if idempotency_key is not None:
                 existing = db.execute(
-                    "SELECT id,request_hash FROM techscout_runs WHERE idempotency_key=?",
+                    """SELECT id,request_hash,request_json FROM techscout_runs
+                       WHERE idempotency_key=?""",
                     (idempotency_key,),
                 ).fetchone()
                 if existing is not None:
                     db.rollback()
-                    if existing["request_hash"] != request_hash:
+                    existing_hash = existing["request_hash"]
+                    if existing_hash != request_hash:
+                        try:
+                            legacy_request = TechScoutCreateRunRequest.model_validate_json(
+                                existing["request_json"]
+                            )
+                            normalized_json = json.dumps(
+                                legacy_request.canonical_payload(),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            )
+                            existing_hash = hashlib.sha256(
+                                normalized_json.encode("utf-8")
+                            ).hexdigest()
+                        except (ValueError, TypeError):
+                            pass
+                    if existing_hash != request_hash:
                         raise ConflictError("idempotency_conflict")
                     return self.get_techscout(existing["id"]), False
             active = db.execute(

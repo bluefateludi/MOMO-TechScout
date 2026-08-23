@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, Query, Request
 from pydantic import UUID4
 
+from paper_agent.techscout.decision_context import DecisionContext
 from paper_agent.web.api_models import ErrorResponse
 from paper_agent.web.techscout_api_models import (
     TechScoutCandidateList,
@@ -52,6 +53,13 @@ def list_runs(request: Request) -> TechScoutRunList:
 @router.get("/{run_id}", response_model=TechScoutRunDetail, responses=ERRORS)
 def get_run(run_id: UUID4, request: Request) -> TechScoutRunDetail:
     return _service(request).detail(str(run_id))
+
+
+@router.get(
+    "/{run_id}/decision-context", response_model=DecisionContext, responses=ERRORS,
+)
+def get_decision_context(run_id: UUID4, request: Request) -> DecisionContext:
+    return _service(request).decision_context(str(run_id))
 
 
 @router.get("/{run_id}/report", response_model=TechScoutReportProjection, responses=ERRORS)

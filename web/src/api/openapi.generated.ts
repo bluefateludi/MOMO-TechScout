@@ -227,6 +227,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v2/runs/{run_id}/decision-context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Decision Context */
+        get: operations["get_decision_context_api_v2_runs__run_id__decision_context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v2/runs/{run_id}/evidence": {
         parameters: {
             query?: never;
@@ -370,6 +387,59 @@ export interface components {
             question: string;
             retrieval: components["schemas"]["RetrievalRequest"];
         };
+        /**
+         * DecisionContext
+         * @description The user-owned facts and criteria that frame one technology decision.
+         */
+        DecisionContext: {
+            /**
+             * Budget Constraints
+             * @default []
+             */
+            budget_constraints: string[];
+            /**
+             * Current Stack
+             * @default []
+             */
+            current_stack: string[];
+            deployment: components["schemas"]["EnvironmentSpec"];
+            /**
+             * License Requirements
+             * @default []
+             */
+            license_requirements: string[];
+            /** Must Haves */
+            must_haves: string[];
+            /**
+             * Performance Requirements
+             * @default []
+             */
+            performance_requirements: string[];
+            /**
+             * Preferences
+             * @default []
+             */
+            preferences: string[];
+            /** Project Summary */
+            project_summary: string;
+            /** Question */
+            question: string;
+            /**
+             * Security Requirements
+             * @default []
+             */
+            security_requirements: string[];
+            /**
+             * Team Capabilities
+             * @default []
+             */
+            team_capabilities: string[];
+            /**
+             * Use Cases
+             * @default []
+             */
+            use_cases: string[];
+        };
         /** DocumentRecord */
         DocumentRecord: {
             /** Content Sha256 */
@@ -387,6 +457,18 @@ export interface components {
             paper_id: string;
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * EnvironmentSpec
+         * @description Runtime and deployment environment relevant to a decision.
+         */
+        EnvironmentSpec: {
+            /** Deployment */
+            deployment: string;
+            /** Operating System */
+            operating_system: string;
+            /** Python Version */
+            python_version: string;
         };
         /** ErrorBody */
         ErrorBody: {
@@ -852,23 +934,42 @@ export interface components {
         };
         /** TechScoutCreateRunRequest */
         TechScoutCreateRunRequest: {
+            /** Budget Constraints */
+            budget_constraints?: string[];
             /** Candidates */
             candidates?: components["schemas"]["TechScoutCandidateInput"][];
+            /** Current Stack */
+            current_stack?: string[];
             environment: components["schemas"]["TechScoutEnvironmentRequest"];
             /** Hard Constraints */
             hard_constraints: string[];
+            /** License Requirements */
+            license_requirements?: string[];
             /**
              * Mode
              * @default fast
              * @enum {string}
              */
             mode: "fast" | "verified";
+            /** Performance Requirements */
+            performance_requirements?: string[];
+            /** Preferences */
+            preferences?: string[];
             /** Project Context */
             project_context: string;
             /** Question */
             question: string;
+            /** Security Requirements */
+            security_requirements?: string[];
+            /** Team Capabilities */
+            team_capabilities?: string[];
+            /** Use Cases */
+            use_cases?: string[];
         };
-        /** TechScoutEnvironmentRequest */
+        /**
+         * TechScoutEnvironmentRequest
+         * @description Compatibility name for the environment projection.
+         */
         TechScoutEnvironmentRequest: {
             /** Deployment */
             deployment: string;
@@ -2077,6 +2178,55 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TechScoutCandidateProjection"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_decision_context_api_v2_runs__run_id__decision_context_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionContext"];
                 };
             };
             /** @description Not Found */
