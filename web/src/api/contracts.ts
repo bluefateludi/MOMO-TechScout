@@ -38,6 +38,7 @@ export type RetrievalMode = RetrievalSettings["mode"];
 export type ArtifactName = RunDetail["available_artifacts"][number];
 
 export type TechScoutCreateRunRequest = Schemas["TechScoutCreateRunRequest"];
+export type DecisionContext = RequiredDeep<Schemas["DecisionContext"]>;
 export type TechScoutRunSummary = RequiredDeep<Schemas["TechScoutRunSummary"]>;
 export type TechScoutRunDetail = RequiredDeep<Schemas["TechScoutRunDetail"]>;
 export type TechScoutRunList = RequiredDeep<Schemas["TechScoutRunList"]>;
@@ -67,6 +68,7 @@ export interface RunApi {
 export interface TechScoutApi {
   listRuns(): Promise<ApiResponse<TechScoutRunList>>;
   createRun(request: TechScoutCreateRunRequest): Promise<ApiResponse<TechScoutRunSummary>>;
+  getDecisionContext(id: string): Promise<ApiResponse<DecisionContext>>;
   getRun(id: string): Promise<ApiResponse<TechScoutRunDetail>>;
   getReport(id: string): Promise<ApiResponse<TechScoutReport>>;
   getCandidate(id: string, candidateId: string): Promise<ApiResponse<TechScoutCandidate>>;

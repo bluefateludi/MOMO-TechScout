@@ -1,4 +1,4 @@
-import type { ApiErrorBody, ApiResponse, TechScoutApi, TechScoutCandidate, TechScoutCreateRunRequest, TechScoutEvidence, TechScoutReport, TechScoutRunDetail, TechScoutRunList, TechScoutRunSummary, TracePage } from "./contracts";
+import type { ApiErrorBody, ApiResponse, DecisionContext, TechScoutApi, TechScoutCandidate, TechScoutCreateRunRequest, TechScoutEvidence, TechScoutReport, TechScoutRunDetail, TechScoutRunList, TechScoutRunSummary, TracePage } from "./contracts";
 import { ApiError, messageForCode } from "./client";
 
 async function request<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
@@ -16,6 +16,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<ApiResponse
 export const techScoutHttpApi: TechScoutApi = {
   listRuns: () => request<TechScoutRunList>("/runs"),
   createRun: (body: TechScoutCreateRunRequest) => request<TechScoutRunSummary>("/runs", { method: "POST", body: JSON.stringify(body) }),
+  getDecisionContext: (id) => request<DecisionContext>(`/runs/${encodeURIComponent(id)}/decision-context`),
   getRun: (id) => request<TechScoutRunDetail>(`/runs/${encodeURIComponent(id)}`),
   getReport: (id) => request<TechScoutReport>(`/runs/${encodeURIComponent(id)}/report`),
   getCandidate: (id, candidateId) => request<TechScoutCandidate>(`/runs/${encodeURIComponent(id)}/candidates/${encodeURIComponent(candidateId)}`),

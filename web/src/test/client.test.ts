@@ -52,4 +52,10 @@ describe("TechScout v2 HTTP client", () => {
     await techScoutHttpApi.getCandidate(TECHSCOUT_FIXTURE_ID, "candidate/with?#opaque");
     expect(vi.mocked(fetch).mock.calls[0][0]).toContain("candidate%2Fwith%3F%23opaque");
   });
+
+  it("reads the canonical Decision Context projection from its v2 route", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } })));
+    await techScoutHttpApi.getDecisionContext(TECHSCOUT_FIXTURE_ID);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe(`/api/v2/runs/${TECHSCOUT_FIXTURE_ID}/decision-context`);
+  });
 });

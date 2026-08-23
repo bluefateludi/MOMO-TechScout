@@ -27,28 +27,30 @@ describe("TechScout task input", () => {
   it("switches language accessibly and persists the choice", async () => {
     const view = render(<I18nProvider><MemoryRouter><Routes><Route element={<Layout/>}><Route path="/" element={<HomePage/>}/></Route></Routes></MemoryRouter></I18nProvider>);
     await userEvent.click(screen.getByRole("button", { name: "中文" }));
-    expect(screen.getByRole("button", { name: "启动 TechScout 任务" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "决策问题" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "中文" })).toHaveAttribute("aria-pressed", "true");
     expect(localStorage.getItem("momo-techscout-locale:v1")).toBe("zh-CN");
     view.unmount();
     render(<I18nProvider><MemoryRouter><HomePage/></MemoryRouter></I18nProvider>);
-    expect(screen.getByRole("button", { name: "启动 TechScout 任务" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "决策问题" })).toBeInTheDocument();
   });
   it("captures environment, hard constraints, candidates, and mode", async () => {
     render(<MemoryRouter><HomePage/></MemoryRouter>);
-    expect(screen.getByRole("link", { name: /open the 90-second demo/i })).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}`);
-    expect(screen.getByText(/4-stage run/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open frozen example/i })).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}`);
+    expect(screen.getByText(/planner may propose questions/i)).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /python version/i })).toHaveValue("3.11");
-    expect(screen.getByRole("textbox", { name: /hard constraints/i })).toHaveValue("local persistence\nmetadata equality filtering");
-    expect(screen.getByRole("textbox", { name: /candidate shortlist/i })).toHaveValue("Chroma, Qdrant Local, pgvector");
-    expect(screen.getByRole("radio", { name: "Fast Demo" })).toBeChecked();
-    expect(await screen.findByText(/Synthetic offline fixture/i)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /must-haves/i })).toHaveValue("local persistence\nmetadata equality filtering");
+    expect(screen.getByRole("textbox", { name: /candidate shortlist/i })).toHaveValue("Chroma\nQdrant Local\npgvector");
+    expect(screen.getByRole("radio", { name: /fast \/ frozen evidence/i })).toBeChecked();
+    expect(await screen.findByText(/Context ledger/i)).toBeInTheDocument();
   });
 
   it("navigates after the synthetic mock accepts a task", async () => {
     vi.spyOn(techScoutApi, "createRun").mockResolvedValue({ data: techScoutRun });
     render(<MemoryRouter><Routes><Route path="/" element={<HomePage/>}/><Route path="/runs/:id" element={<LocationProbe/>}/></Routes></MemoryRouter>);
-    await userEvent.type(screen.getByRole("textbox", { name: /decision question/i }), "Choose a safe local vector store");
+    await userEvent.click(screen.getByRole("button", { name: /review decision rules/i }));
+    expect(await screen.findByRole("heading", { name: /confirm the work/i })).toBeInTheDocument();
+    for (const checkbox of screen.getAllByRole("checkbox")) await userEvent.click(checkbox);
     await userEvent.click(screen.getByRole("button", { name: /start techscout task/i }));
     expect(await screen.findByText(`/runs/${TECHSCOUT_FIXTURE_ID}`)).toBeInTheDocument();
   });
