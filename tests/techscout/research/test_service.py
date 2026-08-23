@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from paper_agent.evidence.hybrid import HybridEvidenceRetriever
 from paper_agent.evidence.models import RetrievalCandidate
@@ -23,6 +23,7 @@ from paper_agent.techscout.tools.adapters import AdapterTimeout
 from paper_agent.techscout.tools.contracts import (
     FetchOutput,
     GitHubInspectOutput,
+    GitHubRelease,
     SearchHit,
     SearchOutput,
     SourceProvenance,
@@ -213,6 +214,80 @@ def test_live_success_normalizes_candidate_evidence_with_hash_provenance() -> No
     assert delivery.context.candidate_id == "candidate:qdrant"
 
 
+def test_search_summaries_are_discovery_only_and_urls_are_deduplicated() -> None:
+    class DuplicateSearch(_Search):
+        def search(self, request):
+            return super().search(request).model_copy(
+                update={
+                    "results": (
+                        SearchHit(
+                            title="Search-only summary",
+                            url="https://docs.example.com/filtering/?utm_source=search",
+                            snippet="UNFETCHED_SEARCH_SUMMARY_CLAIM",
+                        ),
+                        SearchHit(
+                            title="Canonical page",
+                            url="https://DOCS.example.com:443/filtering",
+                            snippet="duplicate discovery record",
+                        ),
+                    )
+                }
+            )
+
+    class CountingFetch(_Fetch):
+        calls = 0
+
+        def fetch(self, request):
+            self.calls += 1
+            return super().fetch(request)
+
+    fetch = CountingFetch()
+    delivery = _service(search=DuplicateSearch(), fetch=fetch).research(
+        request=_request(),
+        policy=_policy(),
+        stage=ContextStage.RESEARCH,
+        as_of=NOW,
+    )
+
+    assert fetch.calls == 1
+    assert delivery.research.documents[0].url == "https://docs.example.com/filtering"
+    assert all(
+        "UNFETCHED_SEARCH_SUMMARY_CLAIM" not in item.claim
+        for item in delivery.research.evidence
+    )
+
+
+def test_matching_github_release_is_ranked_with_version_and_source_type() -> None:
+    class ReleasedGitHub(_GitHub):
+        def inspect_repository(self, request):
+            return super().inspect_repository(request).model_copy(
+                update={
+                    "releases": (
+                        GitHubRelease(
+                            tag="v1.0",
+                            url=(
+                                "https://github.com/qdrant/qdrant-client/"
+                                "releases/tag/v1.0"
+                            ),
+                            published_at=NOW,
+                        ),
+                    )
+                }
+            )
+
+    delivery = _service(github=ReleasedGitHub()).research(
+        request=_request(),
+        policy=_policy(),
+        stage=ContextStage.RESEARCH,
+        as_of=NOW,
+    )
+
+    release = delivery.research.documents[0]
+    assert release.source_type.value == "github_release"
+    assert release.version == "v1.0"
+    assert release.url.endswith("/releases/tag/v1.0")
+
+
 def test_cache_only_sources_are_never_reported_as_live() -> None:
     delivery = _service(
         fetch=_Fetch(cache_status=CacheStatus.STALE),
@@ -229,6 +304,32 @@ def test_cache_only_sources_are_never_reported_as_live() -> None:
         AcquisitionState.CACHE
     }
     assert any(attempt.cache_fallback for attempt in delivery.research.attempts)
+
+
+def test_sources_outside_freshness_window_are_not_materialized_as_facts() -> None:
+    class OldFetch(_Fetch):
+        def fetch(self, request):
+            return super().fetch(request).model_copy(
+                update={
+                    "provenance": _provenance().model_copy(
+                        update={"retrieved_at": NOW - timedelta(days=31)}
+                    )
+                }
+            )
+
+    delivery = _service(
+        fetch=OldFetch(), github=_GitHub(error=AdapterTimeout("offline"))
+    ).research(
+        request=_request(),
+        policy=_policy(),
+        stage=ContextStage.RESEARCH,
+        as_of=NOW,
+    )
+
+    assert delivery.research.state is AcquisitionState.UNAVAILABLE
+    assert delivery.research.documents == ()
+    assert delivery.research.evidence == ()
+    assert any(attempt.available for attempt in delivery.research.attempts)
 
 
 def test_timeout_without_cache_is_explicitly_unavailable() -> None:
@@ -421,7 +522,7 @@ def test_stage_specific_top_k_is_applied_before_context_delivery() -> None:
 
     assert len(research.context.chunks) == 4
     assert len(poc.context.chunks) == 2
-    assert all(source.version == "1.0" for source in poc.context.sources)
+    assert all(source.version is None for source in poc.context.sources)
 
 
 def test_large_live_source_is_bounded_before_context_delivery() -> None:

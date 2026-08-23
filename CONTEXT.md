@@ -25,8 +25,8 @@ A comparison dimension that assesses one or more User Requirements without autom
 _Avoid_: Must-have, model-assigned weight
 
 **Unknown**:
-An explicitly unresolved fact or preference that remains visible until the user, evidence, or a bounded check resolves it.
-_Avoid_: Default, implicit decision
+An explicitly unresolved requirement or claim that remains visible when the user or available Authoritative Sources do not establish it.
+_Avoid_: Default, negative fact, unsupported inference
 
 **Research Question**:
 An evidence-seeking question proposed to resolve or assess one or more User Requirements.
@@ -39,3 +39,31 @@ _Avoid_: Benchmark claim, acceptance criterion
 **Candidate**:
 A technology under consideration within one Decision Context.
 _Avoid_: Paper, option record
+
+**Source Candidate**:
+A discovered official-documentation or project-maintainer record that has not yet passed identity, quality, version, and Freshness checks.
+_Avoid_: Evidence, Retrieved Fact
+
+**Canonical Source URL**:
+The stable identity of a source after cosmetic and tracking URL variants are removed.
+_Avoid_: Search-result URL
+
+**Authoritative Source**:
+An accessed official-documentation or project-maintainer record that matches the Candidate, is fresh enough for the Decision Context, and does not conflict with the requested version.
+_Avoid_: Search Summary, search result
+
+**Search Summary**:
+Discovery text supplied by a search index; it may lead to a Source Candidate but is not itself an Authoritative Source.
+_Avoid_: Retrieved Fact, citation
+
+**Retrieved Fact**:
+A claim stated directly by an Authoritative Source.
+_Avoid_: Inference, assumption
+
+**Inference**:
+An interpretation derived from one or more Retrieved Facts but not stated directly by their sources.
+_Avoid_: Retrieved Fact
+
+**Freshness**:
+Whether a source was accessed recently enough for the decision cutoff; publication time is separate provenance and does not replace access time.
+_Avoid_: Publication date

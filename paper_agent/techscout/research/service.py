@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping
-from datetime import datetime
-from html.parser import HTMLParser
+from datetime import datetime, timedelta
+
+from pydantic import ValidationError
 
 from paper_agent.techscout.context import (
     CandidateContextData,
@@ -48,16 +48,14 @@ from .models import (
     ResearchDelivery,
     SourceAttempt,
 )
-
-
-class _TextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        if data.strip():
-            self.parts.append(data.strip())
+from .normalization import (
+    ClaimBoundary,
+    ContentOrigin,
+    SourceCandidate,
+    SourceNormalizationPolicy,
+    canonicalize_source_url,
+    normalize_and_rank_sources,
+)
 
 
 class _RejectedProvenance(ValueError):
@@ -80,12 +78,15 @@ class LiveEvidenceResearchService:
         context_engine: ContextEngine,
         max_sources: int = 5,
         chunk_size_chars: int = 1_200,
+        max_source_age: timedelta = timedelta(days=30),
         stage_top_k: Mapping[ContextStage, int] | None = None,
     ) -> None:
         if not 1 <= max_sources <= 5:
             raise ValueError("research max_sources must be between 1 and 5")
         if chunk_size_chars < 32:
             raise ValueError("research chunk_size_chars must be at least 32")
+        if max_source_age.total_seconds() <= 0:
+            raise ValueError("research max_source_age must be positive")
         configured_top_k = dict(
             stage_top_k
             or {
@@ -103,6 +104,7 @@ class LiveEvidenceResearchService:
         self._context_engine = context_engine
         self._max_sources = max_sources
         self._chunk_size = chunk_size_chars
+        self._max_source_age = max_source_age
         self._stage_top_k = configured_top_k
 
     def research(
@@ -119,7 +121,7 @@ class LiveEvidenceResearchService:
         expected_version = candidate.resolved_version or candidate.requested_version
         if expected_version is not None and policy.version != expected_version:
             raise ValueError("candidate source policy version does not match request")
-        result = self._acquire(policy)
+        result = self._acquire(policy, as_of=as_of)
         context = CandidateContextData(
             candidate_id=result.candidate_id,
             documents=result.documents,
@@ -137,12 +139,27 @@ class LiveEvidenceResearchService:
         )
         return ResearchDelivery(research=result, context=packet)
 
-    def _acquire(self, policy: CandidateSourcePolicy) -> CandidateResearchResult:
+    def _acquire(
+        self,
+        policy: CandidateSourcePolicy,
+        *,
+        as_of: datetime,
+    ) -> CandidateResearchResult:
         documents: list[SourceDocument] = []
         chunks: list[SourceChunk] = []
         evidence: list[CandidateEvidence] = []
         attempts: list[SourceAttempt] = []
+        candidates: list[SourceCandidate] = []
         seen_urls: set[str] = set()
+        normalization_policy = SourceNormalizationPolicy(
+            candidate_id=policy.candidate_id,
+            official_domains=policy.official_domains,
+            repository_url=policy.repository_url,
+            target_version=policy.version,
+            reference_time=as_of,
+            max_age=self._max_source_age,
+            max_sources=self._max_sources,
+        )
 
         for query in policy.official_queries:
             try:
@@ -165,9 +182,15 @@ class LiveEvidenceResearchService:
                 attempts.append(self._failed_attempt("search", query, error))
                 continue
             for hit in search.results:
-                if len(documents) >= self._max_sources:
+                if len(candidates) >= self._max_sources:
                     break
-                normalized_url = hit.url.rstrip("/")
+                try:
+                    normalized_url = canonicalize_source_url(hit.url)
+                except ValueError as error:
+                    attempts.append(
+                        self._failed_attempt("fetch", hit.url, UnsafeUrl(str(error)))
+                    )
+                    continue
                 if normalized_url in seen_urls:
                     continue
                 seen_urls.add(normalized_url)
@@ -180,23 +203,38 @@ class LiveEvidenceResearchService:
                     )
                     if fetched.candidate_id != policy.candidate_id:
                         raise ValueError("fetched source belongs to another candidate")
-                    self._append_source(
-                        policy=policy,
+                    candidate = SourceCandidate(
+                        candidate_id=policy.candidate_id,
                         url=fetched.url,
                         title=hit.title,
-                        source_type=SourceType.OFFICIAL_DOCUMENTATION,
+                        declared_source_type=SourceType.OFFICIAL_DOCUMENTATION,
+                        origin=ContentOrigin.FETCHED_PAGE,
+                        claim_boundary=ClaimBoundary.FACT,
+                        version=None,
+                        published_at=None,
+                        accessed_at=fetched.provenance.retrieved_at,
                         content=fetched.content,
                         media_type=fetched.media_type,
-                        provenance=fetched.provenance,
-                        documents=documents,
-                        chunks=chunks,
-                        evidence=evidence,
-                        attempts=attempts,
+                        snapshot_sha256=fetched.provenance.snapshot_sha256,
                     )
-                except (AdapterError, _RejectedProvenance, _NormalizationError) as error:
+                    self._validate_candidate(candidate, normalization_policy)
+                    available_attempt = self._available_attempt(
+                        operation="fetch",
+                        reference=normalized_url,
+                        source_type=SourceType.OFFICIAL_DOCUMENTATION,
+                        provenance=fetched.provenance,
+                    )
+                    candidates.append(candidate)
+                    attempts.append(available_attempt)
+                except (
+                    AdapterError,
+                    ValidationError,
+                    _RejectedProvenance,
+                    _NormalizationError,
+                ) as error:
                     attempts.append(self._failed_attempt("fetch", hit.url, error))
 
-        if policy.repository_url is not None and len(documents) < self._max_sources:
+        if policy.repository_url is not None:
             try:
                 github = self._github.inspect_repository(
                     GitHubInspectInput(
@@ -206,30 +244,77 @@ class LiveEvidenceResearchService:
                 )
                 if github.candidate_id != policy.candidate_id:
                     raise ValueError("GitHub source belongs to another candidate")
-                self._append_source(
-                    policy=policy,
+                state = self._provenance_state(github.provenance)
+                repository = SourceCandidate(
+                    candidate_id=policy.candidate_id,
                     url=github.repository_url,
                     title=f"{policy.candidate_id} GitHub repository",
-                    source_type=SourceType.GITHUB_REPOSITORY,
+                    declared_source_type=SourceType.GITHUB_REPOSITORY,
+                    origin=ContentOrigin.GITHUB_API,
+                    claim_boundary=ClaimBoundary.FACT,
+                    version=None,
+                    published_at=None,
+                    accessed_at=github.provenance.retrieved_at,
                     content=self._github_text(github),
                     media_type="text/plain",
-                    provenance=github.provenance,
-                    documents=documents,
-                    chunks=chunks,
-                    evidence=evidence,
-                    attempts=attempts,
+                    snapshot_sha256=github.provenance.snapshot_sha256,
                 )
-            except (AdapterError, _RejectedProvenance, _NormalizationError) as error:
+                self._validate_candidate(repository, normalization_policy)
+                github_candidates = [repository]
+                for release in github.releases:
+                    release_candidate = SourceCandidate(
+                        candidate_id=policy.candidate_id,
+                        url=release.url,
+                        title=f"{policy.candidate_id} release {release.tag}",
+                        declared_source_type=SourceType.GITHUB_RELEASE,
+                        origin=ContentOrigin.GITHUB_API,
+                        claim_boundary=ClaimBoundary.FACT,
+                        version=release.tag,
+                        published_at=release.published_at,
+                        accessed_at=github.provenance.retrieved_at,
+                        content=self._release_text(release.tag, release.published_at),
+                        media_type="text/plain",
+                        snapshot_sha256=github.provenance.snapshot_sha256,
+                    )
+                    self._validate_candidate(release_candidate, normalization_policy)
+                    github_candidates.append(release_candidate)
+                attempts.append(
+                    SourceAttempt(
+                        operation="github",
+                        reference=canonicalize_source_url(github.repository_url),
+                        source_type=SourceType.GITHUB_REPOSITORY,
+                        state=state,
+                        provider=github.provenance.provider,
+                        fetched_at=github.provenance.retrieved_at,
+                        content_sha256=github.provenance.snapshot_sha256,
+                        cache_fallback=github.provenance.cache_fallback,
+                    )
+                )
+                candidates.extend(github_candidates)
+            except (
+                AdapterError,
+                ValidationError,
+                _RejectedProvenance,
+                _NormalizationError,
+            ) as error:
                 attempts.append(
                     self._failed_attempt("github", policy.repository_url, error)
                 )
 
+        normalized = normalize_and_rank_sources(candidates, normalization_policy)
+        self._materialize_sources(
+            policy=policy,
+            sources=normalized.authoritative_sources,
+            documents=documents,
+            chunks=chunks,
+            evidence=evidence,
+        )
         available_states = [item.state for item in attempts if item.available]
         state = (
             AcquisitionState.LIVE
-            if AcquisitionState.LIVE in available_states
+            if documents and AcquisitionState.LIVE in available_states
             else AcquisitionState.CACHE
-            if AcquisitionState.CACHE in available_states
+            if documents and AcquisitionState.CACHE in available_states
             else AcquisitionState.UNAVAILABLE
         )
         return CandidateResearchResult(
@@ -243,64 +328,75 @@ class LiveEvidenceResearchService:
             attempts=tuple(attempts),
         )
 
-    def _append_source(
+    def _materialize_sources(
         self,
         *,
         policy,
-        url,
-        title,
-        source_type,
-        content,
-        media_type,
-        provenance,
+        sources,
         documents,
         chunks,
         evidence,
-        attempts,
     ) -> None:
-        state = self._provenance_state(provenance)
-        text = self._normalize(content, media_type)
-        source_id = self._stable_id("source", policy.candidate_id, url)
-        document = SourceDocument(
-            source_id=source_id,
-            candidate_id=policy.candidate_id,
-            source_type=source_type,
-            url=url,
-            title=title,
-            version=policy.version,
-            as_of=provenance.retrieved_at,
-            content_sha256=provenance.snapshot_sha256,
-        )
-        source_chunks = self._chunks(source_id, text)
-        documents.append(document)
-        chunks.extend(source_chunks)
-        evidence.extend(
-            CandidateEvidence(
-                evidence_id=self._stable_id("evidence", chunk.chunk_id),
+        for source in sources:
+            source_id = self._stable_id(
+                "source", policy.candidate_id, source.canonical_url
+            )
+            document = SourceDocument(
+                source_id=source_id,
                 candidate_id=policy.candidate_id,
-                constraint="source relevance",
-                claim=chunk.text,
-                source_ids=(source_id,),
-                chunk_ids=(chunk.chunk_id,),
-                kind=EvidenceKind.RETRIEVED_FACT,
+                source_type=source.source_type,
+                url=source.canonical_url,
+                title=source.title,
+                version=source.version,
+                as_of=source.accessed_at,
+                content_sha256=source.snapshot_sha256,
             )
-            for chunk in source_chunks
-        )
-        attempts.append(
-            SourceAttempt(
-                operation="fetch" if source_type is SourceType.OFFICIAL_DOCUMENTATION else "github",
-                reference=url,
-                source_type=source_type,
-                state=state,
-                provider=provenance.provider,
-                fetched_at=provenance.retrieved_at,
-                content_sha256=provenance.snapshot_sha256,
-                cache_fallback=provenance.cache_fallback,
+            source_chunks = self._chunks(source_id, source.normalized_text)
+            documents.append(document)
+            chunks.extend(source_chunks)
+            evidence.extend(
+                CandidateEvidence(
+                    evidence_id=self._stable_id("evidence", chunk.chunk_id),
+                    candidate_id=policy.candidate_id,
+                    constraint="source relevance",
+                    claim=chunk.text,
+                    source_ids=(source_id,),
+                    chunk_ids=(chunk.chunk_id,),
+                    kind=EvidenceKind.RETRIEVED_FACT,
+                )
+                for chunk in source_chunks
             )
+
+    @staticmethod
+    def _validate_candidate(candidate, policy) -> None:
+        try:
+            normalize_and_rank_sources((candidate,), policy)
+        except ValueError as error:
+            raise _NormalizationError(str(error)) from error
+
+    def _available_attempt(
+        self,
+        *,
+        operation,
+        reference,
+        source_type,
+        provenance,
+    ) -> SourceAttempt:
+        return SourceAttempt(
+            operation=operation,
+            reference=reference,
+            source_type=source_type,
+            state=self._provenance_state(provenance),
+            provider=provenance.provider,
+            fetched_at=provenance.retrieved_at,
+            content_sha256=provenance.snapshot_sha256,
+            cache_fallback=provenance.cache_fallback,
         )
 
     def _chunks(self, source_id: str, text: str) -> tuple[SourceChunk, ...]:
-        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+        paragraphs = [
+            part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()
+        ]
         pieces: list[str] = []
         for paragraph in paragraphs:
             words = paragraph.split()
@@ -324,30 +420,7 @@ class LiveEvidenceResearchService:
         )
 
     @staticmethod
-    def _normalize(content: str, media_type: str) -> str:
-        if media_type == "text/html":
-            parser = _TextExtractor()
-            parser.feed(content)
-            content = "\n\n".join(parser.parts)
-        elif media_type == "application/json":
-            try:
-                content = json.dumps(
-                    json.loads(content), sort_keys=True, ensure_ascii=False
-                )
-            except json.JSONDecodeError as exc:
-                raise _NormalizationError(
-                    "fetched JSON could not be normalized"
-                ) from exc
-        normalized = content.replace("\x00", "").strip()
-        if not normalized:
-            raise _NormalizationError("fetched source has no usable text")
-        return normalized
-
-    @staticmethod
     def _github_text(output: GitHubInspectOutput) -> str:
-        releases = "\n".join(
-            f"release {item.tag} {item.url}" for item in output.releases
-        )
         issues = "\n".join(
             f"issue {item.number} {item.state} {item.title} {item.url}"
             for item in output.issues
@@ -358,11 +431,15 @@ class LiveEvidenceResearchService:
                 output.description,
                 f"default branch {output.default_branch}; archived {output.archived}",
                 output.readme_excerpt,
-                releases,
                 issues,
             )
             if part.strip()
         )
+
+    @staticmethod
+    def _release_text(tag: str, published_at: datetime | None) -> str:
+        published = published_at.isoformat() if published_at is not None else "unknown"
+        return f"release {tag}; published_at {published}"
 
     @staticmethod
     def _provenance_state(provenance: SourceProvenance) -> AcquisitionState:
@@ -378,7 +455,9 @@ class LiveEvidenceResearchService:
         raise ValueError("live evidence requires explicit live or cache provenance")
 
     @staticmethod
-    def _failed_attempt(operation: str, reference: str, error: Exception) -> SourceAttempt:
+    def _failed_attempt(
+        operation: str, reference: str, error: Exception
+    ) -> SourceAttempt:
         if isinstance(error, AdapterTimeout):
             code = (
                 FailureCode.SEARCH_TIMEOUT
@@ -394,6 +473,8 @@ class LiveEvidenceResearchService:
         elif isinstance(error, _RejectedProvenance):
             code = FailureCode.MALFORMED_MCP_RESPONSE
         elif isinstance(error, _NormalizationError):
+            code = FailureCode.PAGE_PARSING_FAILED
+        elif isinstance(error, ValidationError):
             code = FailureCode.PAGE_PARSING_FAILED
         else:
             code = (
