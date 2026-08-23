@@ -5,12 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { techScoutApi } from "../api";
 import { TECHSCOUT_FIXTURE_ID, fixtureTrace, syntheticNotice, techScoutEvidence, techScoutReport, techScoutRun } from "../api/techscoutFixtures";
 import { CandidatePage } from "../routes/CandidatePage";
+import { Layout } from "../components/Layout";
+import { I18nProvider } from "../i18n";
 import { EvidencePage } from "../routes/EvidencePage";
 import { HomePage } from "../routes/HomePage";
 import { ReportPage } from "../routes/ReportPage";
 import { RunPage } from "../routes/RunPage";
 
 beforeEach(() => {
+  localStorage.clear();
   vi.spyOn(techScoutApi, "listRuns").mockResolvedValue({ data: { items: [techScoutRun], next_cursor: null } });
   vi.spyOn(techScoutApi, "getRun").mockResolvedValue({ data: techScoutRun });
   vi.spyOn(techScoutApi, "getReport").mockResolvedValue({ data: techScoutReport });
@@ -21,6 +24,16 @@ beforeEach(() => {
 });
 
 describe("TechScout task input", () => {
+  it("switches language accessibly and persists the choice", async () => {
+    const view = render(<I18nProvider><MemoryRouter><Routes><Route element={<Layout/>}><Route path="/" element={<HomePage/>}/></Route></Routes></MemoryRouter></I18nProvider>);
+    await userEvent.click(screen.getByRole("button", { name: "中文" }));
+    expect(screen.getByRole("button", { name: "启动 TechScout 任务" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "中文" })).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("momo-techscout-locale:v1")).toBe("zh-CN");
+    view.unmount();
+    render(<I18nProvider><MemoryRouter><HomePage/></MemoryRouter></I18nProvider>);
+    expect(screen.getByRole("button", { name: "启动 TechScout 任务" })).toBeInTheDocument();
+  });
   it("captures environment, hard constraints, candidates, and mode", async () => {
     render(<MemoryRouter><HomePage/></MemoryRouter>);
     expect(screen.getByRole("textbox", { name: /python version/i })).toHaveValue("3.11");
@@ -85,6 +98,13 @@ describe("fixture-backed TechScout views", () => {
     expect(await screen.findByRole("note")).toHaveTextContent(syntheticNotice); candidate.unmount();
     render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}/evidence/ev-chroma-persistence`]}>{routes}</MemoryRouter>);
     expect(await screen.findByRole("note")).toHaveTextContent(syntheticNotice); expect(screen.getByText(/no external URL/i)).toBeInTheDocument();
+  });
+
+  it("does not label a live candidate as a synthetic fixture", async () => {
+    vi.mocked(techScoutApi.getEvidence).mockResolvedValue({ data: { items: techScoutEvidence.map((item) => ({ ...item, acquisition_state: "live" as const })) } });
+    render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}/candidates/chroma`]}><Routes><Route path="/runs/:id/candidates/:candidateId" element={<CandidatePage/>}/></Routes></MemoryRouter>);
+    expect(await screen.findByRole("heading", { name: techScoutRun.candidates[0].name })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("note")).not.toBeInTheDocument());
   });
 
   it("renders live, cached, PoC verified, research-only, and limited authority explicitly", async () => {

@@ -16,6 +16,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
+from pydantic import Field
+
+from paper_agent.generation import GenerationMessage, GenerationProvider
 from paper_agent.modeling import StrictModel
 from paper_agent.techscout.errors import Failure, FailureCode, FailureStage, RecoveryAction
 from paper_agent.techscout.harness import (
@@ -107,6 +110,18 @@ _COMPLETED_BY_STAGE = {
     "decide": ["plan", "research", "verify"],
     "terminal": ["plan", "research", "verify", "decide"],
 }
+
+
+class ModelDecisionDraft(StrictModel):
+    """Narrow model contribution; deterministic code retains all authority."""
+
+    preferred_candidate_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^candidate:[a-z0-9][a-z0-9._-]*$",
+    )
+    summary: str = Field(min_length=1, max_length=2_000)
 
 
 def _sha(value: str) -> str:
@@ -433,10 +448,6 @@ class DeterministicStageServices:
             (item for item in state.request.candidates if item.candidate_id in passed_ids),
             state.request.candidates[0],
         )
-        passed = any(
-            item.candidate_id == candidate.candidate_id and item.status is PocStatus.PASSED
-            for item in self.poc_results
-        )
         evidence_by_candidate_constraint = {
             (item.candidate_id, item.constraint): item.evidence_id
             for item in self.evidence
@@ -445,31 +456,37 @@ class DeterministicStageServices:
             "cached_degradation", "verified_limited", "research_only",
             "docker_unavailable", "research_unavailable",
         }
+        default_summary = (
+            "No safe winner is claimed because the frozen provider cache was used."
+            if self.scenario == "cached_degradation"
+            else "Verified mode is limited because live providers and a real Docker PoC are not connected."
+            if self.scenario == "verified_limited"
+            else "No safe winner is claimed because the candidate has no reviewed local PoC recipe."
+            if self.scenario == "research_only"
+            else "No safe winner is claimed because the reviewed Docker PoC is unavailable."
+            if self.scenario == "docker_unavailable"
+            else "No safe winner is claimed because neither live nor cached evidence is available."
+            if self.scenario == "research_unavailable"
+            else "No safe winner is claimed because the reviewed PoC failed after bounded recovery."
+            if self.scenario == "verification_failed"
+            else "Live evidence and reviewed Docker PoCs satisfy the Hero Case gates; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
+            if self.scenario == "verified" and passed_ids
+            else "All supported candidates passed frozen evidence and deterministic local PoC validation; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
+            if passed_ids
+            else "The first deterministic PoC attempt requires one bounded recovery."
+        )
+        candidate, summary, model_tokens = self._decision_report_contribution(
+            state, passed_ids=passed_ids, default_candidate=candidate,
+            default_summary=default_summary,
+        )
+        passed = candidate.candidate_id in passed_ids
         limited = explicit_limited or not passed
         report = DecisionReport(
             report_id=f"report:{state.run_id.split(':', 1)[1]}",
             run_id=state.run_id,
             recommendation=None if limited else candidate.candidate_id,
             verdict=Verdict.INSUFFICIENT_EVIDENCE if limited else Verdict.RECOMMENDED,
-            summary=(
-                "No safe winner is claimed because the frozen provider cache was used."
-                if self.scenario == "cached_degradation"
-                else "Verified mode is limited because live providers and a real Docker PoC are not connected."
-                if self.scenario == "verified_limited"
-                else "No safe winner is claimed because the candidate has no reviewed local PoC recipe."
-                if self.scenario == "research_only"
-                else "No safe winner is claimed because the reviewed Docker PoC is unavailable."
-                if self.scenario == "docker_unavailable"
-                else "No safe winner is claimed because neither live nor cached evidence is available."
-                if self.scenario == "research_unavailable"
-                else "No safe winner is claimed because the reviewed PoC failed after bounded recovery."
-                if self.scenario == "verification_failed"
-                else "Live evidence and reviewed Docker PoCs satisfy the Hero Case gates; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
-                if self.scenario == "verified" and passed
-                else "All supported candidates passed frozen evidence and deterministic local PoC validation; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
-                if passed
-                else "The first deterministic PoC attempt requires one bounded recovery."
-            ),
+            summary=summary,
             constraint_results=tuple(
                 ConstraintResult(
                     candidate_id=item.candidate_id,
@@ -594,8 +611,19 @@ class DeterministicStageServices:
             self._draft_manifest = manifest
         return StageResult(
             state=state.model_copy(update={"gate_outcome": outcome, "failures": failures}),
-            tokens=120,
+            tokens=120 + model_tokens,
         )
+
+    def _decision_report_contribution(
+        self,
+        state: ResearchState,
+        *,
+        passed_ids: set[str],
+        default_candidate: Candidate,
+        default_summary: str,
+    ) -> tuple[Candidate, str, int]:
+        del state, passed_ids
+        return default_candidate, default_summary, 0
 
     def _workspace_path(self) -> Path:
         return self.run_dir / "stage-workspace.json"
@@ -686,6 +714,8 @@ class VerifiedStageServices:
         research_service: LiveEvidenceResearchService,
         context_engine: ContextEngine,
         poc_service: RealPocService,
+        generation_provider: GenerationProvider | None = None,
+        generation_timeout_seconds: float = 60.0,
         **kwargs,
     ) -> None:
         self.acquisition_states: dict[str, AcquisitionState] = {}
@@ -709,6 +739,12 @@ class VerifiedStageServices:
         self._research_service = research_service
         self._context_engine = context_engine
         self._poc_service = poc_service
+        self._generation_provider = generation_provider
+        self._generation_timeout_seconds = generation_timeout_seconds
+        self.model_prompt_tokens: int | None = None
+        self.model_completion_tokens: int | None = None
+        self.model_total_tokens: int | None = None
+        self.model_revision: str | None = None
         DeterministicStageServices._load_workspace(self)
 
     def _workspace_path(self) -> Path:
@@ -1019,6 +1055,67 @@ class VerifiedStageServices:
             self.scenario = "verified"
         return DeterministicStageServices._validate(self, state)
 
+    def _decision_report_contribution(
+        self,
+        state: ResearchState,
+        *,
+        passed_ids: set[str],
+        default_candidate: Candidate,
+        default_summary: str,
+    ) -> tuple[Candidate, str, int]:
+        if self._generation_provider is None:
+            return default_candidate, default_summary, 0
+        bounded_facts = {
+            "question": state.request.question,
+            "hard_constraints": list(state.request.hard_constraints),
+            "candidate_ids": [item.candidate_id for item in state.request.candidates],
+            "eligible_poc_passed_candidate_ids": sorted(passed_ids),
+            "scenario": self.scenario,
+            "evidence_ids": [item.evidence_id for item in self.evidence],
+            "poc_statuses": {
+                item.candidate_id: item.status.value for item in self.poc_results
+            },
+        }
+        generated = self._generation_provider.generate_structured(
+            operation="techscout_decision_report",
+            messages=(
+                GenerationMessage(
+                    role="system",
+                    content=(
+                        "You draft a bounded TechScout decision. Choose only from "
+                        "eligible_poc_passed_candidate_ids. If that list is empty, "
+                        "preferred_candidate_id must be null and the summary must "
+                        "state that there is no safe winner. Never request tools, "
+                        "invent evidence, or extend Local results to Cloud, HA, or clusters."
+                    ),
+                ),
+                GenerationMessage(
+                    role="user",
+                    content=json.dumps(bounded_facts, sort_keys=True),
+                ),
+            ),
+            response_schema=ModelDecisionDraft,
+            timeout=self._generation_timeout_seconds,
+        )
+        self.model_prompt_tokens = generated.prompt_tokens
+        self.model_completion_tokens = generated.completion_tokens
+        self.model_total_tokens = generated.total_tokens
+        self.model_revision = generated.model
+        preferred = next(
+            (
+                item
+                for item in state.request.candidates
+                if item.candidate_id == generated.result.preferred_candidate_id
+                and item.candidate_id in passed_ids
+            ),
+            None,
+        )
+        # The model may rank only already-authorized candidates. The gate still owns
+        # the report verdict, recommendation, constraints, evidence, and publication.
+        if preferred is None:
+            return default_candidate, default_summary, generated.total_tokens or 0
+        return preferred, generated.result.summary, generated.total_tokens or 0
+
     def _require_remaining_seconds(self, required: float) -> None:
         if self._active_deadline is None:
             raise StageDeadlineExceeded("verified stage lacks a deadline")
@@ -1058,10 +1155,14 @@ class TechScoutRunEngine:
         registry: RunRegistry,
         *,
         verified_services_factory: StageServicesFactory | None = None,
+        verified_timeout_seconds: int = 300,
     ) -> None:
+        if verified_timeout_seconds < 60 or verified_timeout_seconds > 1800:
+            raise ValueError("verified timeout must be between 60 and 1800 seconds")
         self.output_root = output_root
         self.registry = registry
         self.verified_services_factory = verified_services_factory
+        self.verified_timeout_seconds = verified_timeout_seconds
 
     def run(self, row: TechScoutRegistryRun) -> tuple[TechScoutProjectionBundle, str]:
         run_dir = self.output_root / "techscout" / row.id
@@ -1106,7 +1207,11 @@ class TechScoutRunEngine:
             services = self.verified_services_factory(**service_kwargs)
         else:
             services = DeterministicStageServices(scenario=scenario, **service_kwargs)
-        state = self._initial_state(core_id, row.request)
+        state = self._initial_state(
+            core_id,
+            row.request,
+            verified_timeout_seconds=self.verified_timeout_seconds,
+        )
         checkpoint_path = run_dir / "harness-checkpoints.sqlite3"
         with SQLiteCheckpointAdapter(checkpoint_path) as checkpoints:
             harness = TechScoutHarness(TracingStageServices(services, trace), checkpoints)
@@ -1120,13 +1225,21 @@ class TechScoutRunEngine:
             terminal_status=result.state.terminal_status.value if result.state.terminal_status else "failed",
             gate_outcome=result.state.gate_outcome.value if result.state.gate_outcome else "failed",
             latency_ms=round((time.monotonic() - started) * 1000),
-            prompt_tokens=result.state.token_count,
-            completion_tokens=0,
+            prompt_tokens=(
+                services.model_prompt_tokens
+                if getattr(services, "model_prompt_tokens", None) is not None
+                else result.state.token_count
+            ),
+            completion_tokens=getattr(services, "model_completion_tokens", None) or 0,
             retry_count=result.state.recovery_count,
             recovery_count=result.state.recovery_count,
             report_sha256=_sha(result.report.model_dump_json() if result.report else ""),
             manifest_sha256=_sha(result.manifest.model_dump_json() if result.manifest else ""),
             status="ok" if result.state.terminal_status is not TerminalStatus.FAILED else "error",
+            context={
+                "model_revision": getattr(services, "model_revision", None),
+                "provider_usage_reported": getattr(services, "model_total_tokens", None) is not None,
+            },
         )
         trace.seal()
         return bundle, str((run_dir / "web-projection.json").relative_to(self.output_root))
@@ -1219,7 +1332,12 @@ class TechScoutRunEngine:
         return "happy"
 
     @staticmethod
-    def _initial_state(core_id: str, request: TechScoutCreateRunRequest) -> ResearchState:
+    def _initial_state(
+        core_id: str,
+        request: TechScoutCreateRunRequest,
+        *,
+        verified_timeout_seconds: int = 300,
+    ) -> ResearchState:
         candidates = tuple(
             Candidate(
                 candidate_id=f"candidate:{_slug(item.name)}",
@@ -1253,7 +1371,11 @@ class TechScoutRunEngine:
             request=research_request,
             budget=RunBudget(
                 deadline_at=utc_now()
-                + timedelta(seconds=300 if request.mode == "verified" else 120)
+                + timedelta(
+                    seconds=verified_timeout_seconds
+                    if request.mode == "verified"
+                    else 120
+                )
             ),
             stage=ResearchStage.NORMALIZE_REQUEST,
             step_count=0,

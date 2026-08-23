@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from paper_agent.evidence.hybrid import HybridEvidenceRetriever
 from paper_agent.evidence.retriever import LexicalCandidateSource
+from paper_agent.generation import StructuredGeneration
 from paper_agent.techscout.context import ContextEngine, HybridContextRetriever
 from paper_agent.techscout.errors import FailureCode
 from paper_agent.techscout.models import CacheStatus, PocArtifact, PocResult, PocStatus
@@ -23,7 +25,7 @@ from paper_agent.techscout.tools.contracts import (
     SourceProvenance,
 )
 from paper_agent.web.app import create_app
-from paper_agent.web.techscout_execution import VerifiedStageServices
+from paper_agent.web.techscout_execution import ModelDecisionDraft, VerifiedStageServices
 from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
 from paper_agent.web.techscout_execution import TechScoutRunEngine
 
@@ -127,7 +129,28 @@ class _Poc:
         )
 
 
-def _factory(*, cache: bool = False, github_cache: bool | None = None, poc: _Poc | None = None):
+class _GenerationProvider:
+    def __init__(self, preferred_candidate_id: str | None) -> None:
+        self.preferred_candidate_id = preferred_candidate_id
+        self.calls = []
+
+    def generate_structured(self, **kwargs):
+        self.calls.append(kwargs)
+        return StructuredGeneration(
+            result=ModelDecisionDraft(
+                preferred_candidate_id=self.preferred_candidate_id,
+                summary="Model-ranked only the candidates authorized by evidence and PoC.",
+            ),
+            model="qwen-exact-test-revision",
+            prompt_tokens=41,
+            completion_tokens=13,
+            total_tokens=54,
+            attempts=1,
+            elapsed_seconds=0.01,
+        )
+
+
+def _factory(*, cache: bool = False, github_cache: bool | None = None, poc: _Poc | None = None, generation_provider=None):
     poc = poc or _Poc()
     retrieval = HybridEvidenceRetriever(
         lexical_source=LexicalCandidateSource(), vector_source=None,
@@ -140,7 +163,8 @@ def _factory(*, cache: bool = False, github_cache: bool | None = None, poc: _Poc
         context_engine=context_engine,
     )
     return lambda **kwargs: VerifiedStageServices(
-        research_service=research, context_engine=context_engine, poc_service=poc, **kwargs
+        research_service=research, context_engine=context_engine, poc_service=poc,
+        generation_provider=generation_provider, **kwargs
     )
 
 
@@ -183,6 +207,36 @@ def test_verified_happy_path_is_live_and_poc_verified(tmp_path: Path) -> None:
     serialized = " ".join(item["label"] for item in _)
     assert str(tmp_path) not in serialized
     assert "raw provider body" not in serialized
+
+
+def test_model_ranks_only_poc_authorized_candidates_and_reports_usage(tmp_path: Path) -> None:
+    provider = _GenerationProvider("candidate:qdrant-local")
+    detail, report, _, _ = _run(tmp_path, _factory(generation_provider=provider))
+    assert detail["status"] == "completed"
+    assert report["recommendation"] == "qdrant-local"
+    assert report["summary"].startswith("Model-ranked")
+    assert provider.calls[0]["response_schema"] is ModelDecisionDraft
+    trace_path = tmp_path / "outputs" / "techscout" / detail["id"] / "traces.jsonl"
+    terminal = next(
+        item for item in reversed([
+            json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()
+        ]) if item.get("name") == "terminal.completed"
+    )
+    assert terminal["attributes"]["prompt_tokens"] == 41
+    assert terminal["attributes"]["completion_tokens"] == 13
+    assert terminal["attributes"]["model_revision"] == "qwen-exact-test-revision"
+    assert terminal["attributes"]["provider_usage_reported"] is True
+
+
+def test_model_cannot_promote_research_only_candidate(tmp_path: Path) -> None:
+    provider = _GenerationProvider("candidate:pgvector")
+    _, report, _, _ = _run(
+        tmp_path,
+        _factory(generation_provider=provider),
+        _body([{"name": "Chroma"}, {"name": "pgvector"}]),
+    )
+    assert report["recommendation"] == "chroma"
+    assert not report["summary"].startswith("Model-ranked")
 
 
 def test_verified_budget_is_300_seconds_and_fast_budget_stays_120(tmp_path: Path) -> None:

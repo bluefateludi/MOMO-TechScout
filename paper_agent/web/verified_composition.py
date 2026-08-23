@@ -8,6 +8,7 @@ from typing import Callable
 import httpx
 
 from paper_agent.config import Settings
+from paper_agent.generation import DashScopeChatTransport, DashScopeGenerationProvider
 from paper_agent.evidence.hybrid import HybridEvidenceRetriever
 from paper_agent.evidence.retriever import LexicalCandidateSource
 from paper_agent.techscout.context import ContextEngine, HybridContextRetriever
@@ -37,6 +38,7 @@ def make_verified_services_factory(
     output_root: Path,
     state_root: Path,
     settings_loader: Callable[[], Settings],
+    generation_max_tokens: int = 1_024,
 ) -> StageServicesFactory:
     """Build live dependencies only when a verified run is actually claimed."""
 
@@ -47,6 +49,17 @@ def make_verified_services_factory(
         workspace_root.mkdir(parents=True, exist_ok=True)
         settings = settings_loader()
         client = httpx.Client()
+        generation_provider = (
+            DashScopeGenerationProvider(
+                api_key=settings.dashscope_api_key,
+                model=settings.dashscope_generation_model,
+                base_url=settings.dashscope_generation_base_url,
+                transport=DashScopeChatTransport(client),
+                max_tokens=generation_max_tokens,
+            )
+            if settings.dashscope_api_key
+            else None
+        )
         cache = ContentAddressedCache(cache_root)
         live_search = (
             TavilySearchAdapter(
@@ -102,6 +115,8 @@ def make_verified_services_factory(
             research_service=research,
             context_engine=context_engine,
             poc_service=poc,
+            generation_provider=generation_provider,
+            generation_timeout_seconds=settings.dashscope_generation_timeout_seconds,
             **kwargs,
         )
 

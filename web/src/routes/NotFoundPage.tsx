@@ -1,2 +1,3 @@
 import { ErrorPanel } from "../components/Feedback";
-export function NotFoundPage() { return <ErrorPanel code="not_found" message="This page is not part of the research desk."/>; }
+import { useI18n } from "../i18n";
+export function NotFoundPage() { const { t } = useI18n(); return <ErrorPanel code="not_found" message={t("notFound")}/>; }

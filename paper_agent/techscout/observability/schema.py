@@ -61,7 +61,8 @@ _ALLOWED_ATTRIBUTES = {
     TraceEventName.TERMINAL_COMPLETED: {
         "terminal_status", "gate_outcome", "latency_ms", "prompt_tokens",
         "completion_tokens", "total_tokens", "retry_count", "recovery_count",
-        "report_sha256", "manifest_sha256"
+        "report_sha256", "manifest_sha256", "model_revision",
+        "provider_usage_reported",
     },
 }
 _REQUIRED_ATTRIBUTES = {

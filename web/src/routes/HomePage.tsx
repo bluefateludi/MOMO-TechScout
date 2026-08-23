@@ -4,6 +4,7 @@ import { techScoutApi } from "../api";
 import type { TechScoutCreateRunRequest, TechScoutRunSummary } from "../api/contracts";
 import { ApiError } from "../api/client";
 import { TECHSCOUT_FIXTURE_ID } from "../api/techscoutFixtures";
+import { useI18n } from "../i18n";
 
 const initial: TechScoutCreateRunRequest = {
   question: "", project_context: "Local RAG service choosing a Python vector store.",
@@ -12,6 +13,7 @@ const initial: TechScoutCreateRunRequest = {
 };
 
 export function HomePage() {
+  const { t } = useI18n();
   const navigate = useNavigate(); const [form, setForm] = useState(initial); const [constraints, setConstraints] = useState(initial.hard_constraints.join("\n")); const [candidates, setCandidates] = useState("Chroma, Qdrant Local, pgvector");
   const [runs, setRuns] = useState<TechScoutRunSummary[]>([]); const [pending, setPending] = useState(false); const [error, setError] = useState<ApiError | null>(null);
   useEffect(() => { void techScoutApi.listRuns().then((response) => setRuns(response.data.items)).catch(() => setRuns([])); }, []);
@@ -23,16 +25,16 @@ export function HomePage() {
     } catch (caught) { setError(caught instanceof ApiError ? caught : new ApiError(0, "connection_lost", "The local API could not be reached.")); } finally { setPending(false); }
   }
   return <>
-    <section className="tech-hero"><div><p className="eyebrow">Wave 2 · Harness-backed component research</p><h1>Choose with<br/><em>receipts.</em></h1><p className="dek">Compare Python AI components against hard constraints, frozen evidence over local MCP, and deterministic allowlisted checks.</p></div><aside className="scope-card"><b>Fast Demo boundary</b><strong>Local RAG vector stores</strong><p>Fast Demo is synthetic and offline. Verified mode remains explicitly limited until live providers and real Docker are connected.</p></aside></section>
-    <section className="tech-desk"><form className="tech-form" onSubmit={submit}><header><span>01</span><div><p className="eyebrow">New task</p><h2>Frame the decision</h2></div></header>
-      <label>Decision question<textarea aria-label="Decision question" required minLength={3} value={form.question} onChange={(event) => setForm({ ...form, question: event.target.value })} placeholder="Which local vector store fits this service?"/></label>
-      <label>Project context<textarea aria-label="Project context" required value={form.project_context} onChange={(event) => setForm({ ...form, project_context: event.target.value })}/></label>
-      <div className="env-grid"><label>Python<input aria-label="Python version" value={form.environment.python_version} onChange={(event) => setForm({ ...form, environment: { ...form.environment, python_version: event.target.value } })}/></label><label>Operating system<input aria-label="Operating system" value={form.environment.operating_system} onChange={(event) => setForm({ ...form, environment: { ...form.environment, operating_system: event.target.value } })}/></label><label>Deployment<input aria-label="Deployment" value={form.environment.deployment} onChange={(event) => setForm({ ...form, environment: { ...form.environment, deployment: event.target.value } })}/></label></div>
-      <label>Hard constraints <small>one per line, maximum five</small><textarea aria-label="Hard constraints" value={constraints} onChange={(event) => setConstraints(event.target.value)}/></label>
-      <label>Candidate shortlist <small>optional, comma-separated, maximum three</small><input aria-label="Candidate shortlist" value={candidates} onChange={(event) => setCandidates(event.target.value)}/></label>
-      <fieldset className="mode-field"><legend>Mode</legend><label><input type="radio" name="mode" checked={(form.mode ?? "fast") === "fast"} onChange={() => setForm({ ...form, mode: "fast" })}/> Fast Demo</label><label><input type="radio" name="mode" checked={form.mode === "verified"} onChange={() => setForm({ ...form, mode: "verified" })}/> Verified (Live + reviewed Docker)</label></fieldset>
+    <section className="tech-hero"><div><p className="eyebrow">{t("heroEye")}</p><h1>{t("heroTitleA")}<br/><em>{t("heroTitleB")}</em></h1><p className="dek">{t("heroDek")}</p></div><aside className="scope-card"><b>{t("boundary")}</b><strong>{t("vectorStores")}</strong><p>{t("boundaryBody")}</p></aside></section>
+    <section className="tech-desk"><form className="tech-form" onSubmit={submit}><header><span>01</span><div><p className="eyebrow">{t("newTask")}</p><h2>{t("frame")}</h2></div></header>
+      <label>{t("question")}<textarea aria-label={t("question")} required minLength={3} value={form.question} onChange={(event) => setForm({ ...form, question: event.target.value })} placeholder={t("questionPlaceholder")}/></label>
+      <label>{t("project")}<textarea aria-label={t("project")} required value={form.project_context} onChange={(event) => setForm({ ...form, project_context: event.target.value })}/></label>
+      <div className="env-grid"><label>{t("python")}<input aria-label={`${t("python")} version`} value={form.environment.python_version} onChange={(event) => setForm({ ...form, environment: { ...form.environment, python_version: event.target.value } })}/></label><label>{t("os")}<input aria-label={t("os")} value={form.environment.operating_system} onChange={(event) => setForm({ ...form, environment: { ...form.environment, operating_system: event.target.value } })}/></label><label>{t("deployment")}<input aria-label={t("deployment")} value={form.environment.deployment} onChange={(event) => setForm({ ...form, environment: { ...form.environment, deployment: event.target.value } })}/></label></div>
+      <label>{t("constraints")} <small>{t("constraintsHint")}</small><textarea aria-label={t("constraints")} value={constraints} onChange={(event) => setConstraints(event.target.value)}/></label>
+      <label>{t("candidates")} <small>{t("candidatesHint")}</small><input aria-label={t("candidates")} value={candidates} onChange={(event) => setCandidates(event.target.value)}/></label>
+      <fieldset className="mode-field"><legend>{t("mode")}</legend><label><input type="radio" name="mode" checked={(form.mode ?? "fast") === "fast"} onChange={() => setForm({ ...form, mode: "fast" })}/> {t("fast")}</label><label><input type="radio" name="mode" checked={form.mode === "verified"} onChange={() => setForm({ ...form, mode: "verified" })}/> {t("verified")}</label></fieldset>
       {error && <div className="api-warning" role="alert"><strong>{error.code}</strong><span>{error.message}</span></div>}
-      <button className="primary-action" disabled={pending}>{pending ? "Submitting…" : "Start TechScout task"}</button>
-    </form><aside className="recent-runs"><header><span>02</span><div><p className="eyebrow">Recent runs</p><h2>Decision ledger</h2></div></header><Link className="offline-callout" to={`/runs/${TECHSCOUT_FIXTURE_ID}`}><b>Synthetic offline fixture</b><span>No live evidence, provider, Docker, or evaluation claims.</span></Link>{runs.map((run) => <Link key={run.id} to={`/runs/${run.id}`}><span className="run-dot" data-status={run.status}/><strong>{run.question}</strong><small>{run.status.replaceAll("_", " ")}</small></Link>)}</aside></section>
+      <button className="primary-action" disabled={pending}>{pending ? t("submitting") : t("start")}</button>
+    </form><aside className="recent-runs"><header><span>02</span><div><p className="eyebrow">{t("recent")}</p><h2>{t("ledger")}</h2></div></header><Link className="offline-callout" to={`/runs/${TECHSCOUT_FIXTURE_ID}`}><b>{t("fixtureTitle")}</b><span>{t("fixtureBody")}</span></Link>{runs.map((run) => <Link key={run.id} to={`/runs/${run.id}`}><span className="run-dot" data-status={run.status}/><strong>{run.question}</strong><small>{run.status.replaceAll("_", " ")}</small></Link>)}</aside></section>
   </>;
 }

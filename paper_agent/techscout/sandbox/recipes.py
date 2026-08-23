@@ -38,7 +38,7 @@ def _recipes() -> tuple[ReviewedRecipe, ...]:
     return (
         ReviewedRecipe(
             recipe_id="recipe:chroma-local@1",
-            candidate_ids=frozenset({"candidate:chromadb"}),
+            candidate_ids=frozenset({"candidate:chromadb", "candidate:chroma"}),
             package_name="chromadb",
             package_version="1.0.15",
             candidate_names=frozenset({"chroma", "chromadb"}),
@@ -68,7 +68,9 @@ def _recipes() -> tuple[ReviewedRecipe, ...]:
         ),
         ReviewedRecipe(
             recipe_id="recipe:qdrant-local@1",
-            candidate_ids=frozenset({"candidate:qdrant-client"}),
+            candidate_ids=frozenset(
+                {"candidate:qdrant-client", "candidate:qdrant-local"}
+            ),
             package_name="qdrant-client",
             package_version="1.15.1",
             candidate_names=frozenset({"qdrant", "qdrant local", "qdrant-client"}),
