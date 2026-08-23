@@ -49,6 +49,8 @@ class FailureCode(str, Enum):
     APPROVAL_DENIED = "approval_denied"
     BUDGET_EXHAUSTED = "budget_exhausted"
     DEADLINE_EXCEEDED = "deadline_exceeded"
+    EXPERIMENT_CANCELLED = "experiment_cancelled"
+    EXPERIMENT_CLEANUP_FAILED = "experiment_cleanup_failed"
     ARTIFACT_PUBLISH_FAILED = "artifact_publish_failed"
 
 

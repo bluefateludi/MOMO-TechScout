@@ -36,6 +36,34 @@ _Avoid_: User Requirement, conclusion
 A bounded verification target linked to one or more User Requirements; its result informs the decision but does not define the requirement.
 _Avoid_: Benchmark claim, acceptance criterion
 
+**Experiment Recipe**:
+A reviewed, versioned procedure that declares either a Research-only disposition or an ordered set of offline Recipe Checks under one Execution Budget.
+_Avoid_: Generated shell script, candidate recommendation
+
+**Recipe Check**:
+An atomic, reviewed execution step within an Experiment Recipe that may produce Experiment Artifacts and Measurements for a PoC Check.
+_Avoid_: PoC Check, User Requirement, arbitrary command
+
+**Execution Budget**:
+The approved limit on an Experiment Execution's Checks, wall time, per-Check time, sandbox resources, Artifact bytes, and Measurements.
+_Avoid_: Performance target, observed usage
+
+**Experiment Artifact**:
+An immutable, content-hashed record produced by a Recipe Check and retained as audit evidence of what the sandbox observed.
+_Avoid_: Measurement, live claim, mutable log
+
+**Measurement**:
+A typed value observed during a Recipe Check and linked to the Experiment Artifact that supports it.
+_Avoid_: Retrieved Fact, target, inference
+
+**Experiment Execution**:
+One idempotently identified application of an Experiment Recipe to a subject, ending in exactly one sealed terminal outcome.
+_Avoid_: Open-ended agent run, retry loop
+
+**Research-only**:
+A disposition that permits evidence research but forbids Experiment Recipe command execution because no reviewed procedure is available.
+_Avoid_: Failed verification, unsupported fact, implicit rejection
+
 **Candidate**:
 A technology under consideration within one Decision Context.
 _Avoid_: Paper, option record

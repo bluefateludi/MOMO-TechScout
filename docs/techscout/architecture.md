@@ -72,3 +72,16 @@ Optional OTLP export is a secondary observability sink. Export failure must not 
 ## Failure semantics
 
 Search/cache, tool-schema, dependency, PoC, report, deadline, and unsafe-operation failures are typed. Recovery is local to the failed stage and linked to a checkpoint; completed work is reused where valid. If the policy bound is exhausted, the product publishes an honest limited artifact or fails safely. It does not restart indefinitely or infer incompatibility from missing infrastructure.
+
+## Generic Experiment Recipe engine tracer bullet
+
+The generic Experiment module is a deeper orchestration layer over the existing sandbox seam; it is not a second command or container executor. Its public interface accepts an `ExecutionRequest`, a run workspace, and an optional cooperative cancellation token, and returns one content-sealed terminal contract. A `SandboxExperimentAdapter` translates each reviewed Recipe Check into the existing structured `CompiledCommand` and delegates to the existing `SandboxRunner`. Docker argv construction, network denial, CPU/memory/PID/disk limits, output bounds, timeout cleanup, and fake-runner substitution therefore remain in one module.
+
+The first closed registry deliberately contains no vector-store or candidate identity. It provides:
+
+- an explicit Research-only Recipe that never crosses the runner seam; and
+- one safe offline Python-runtime Recipe that performs two fixed, no-network Checks.
+
+Every executable Recipe is versioned and content-hashed. Each Check writes a sanitized, content-addressed Experiment Artifact; standard duration and exit-code Measurements link back to that Artifact. The Execution Budget limits Check count, total wall time, per-Check time, sandbox resources, Artifact bytes, and Measurement count. Any cancellation, timeout, non-zero exit, unavailable runner, budget exhaustion, adapter rejection, or cleanup failure ends in an immutable typed failure inside the same sealed terminal contract. No failed Check is automatically retried.
+
+Idempotency is scoped to a run workspace. Reusing the same idempotency key with the same immutable request returns the stored seal without another runner call; using it for a different request fails closed. A lock prevents concurrent duplicate execution. The current tracer bullet intentionally does not wire this module into the Harness, MCP, API, or UI, and it does not replace the candidate-specific `RealPocService` compatibility path. A host-process crash before terminal publication can leave an in-progress lock that requires later operator-controlled recovery; automatic stale-lock deletion is deferred because it could duplicate a still-running external command.

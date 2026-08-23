@@ -6,10 +6,14 @@ The registry is intentionally closed: unsupported candidates remain research-onl
 from dataclasses import dataclass
 
 from paper_agent.techscout.errors import StableId
-from paper_agent.techscout.sandbox.types import NetworkAccess, PocStage
+from paper_agent.techscout.sandbox.types import (
+    DEFAULT_SANDBOX_IMAGE,
+    NetworkAccess,
+    PocStage,
+)
 
 
-SANDBOX_IMAGE = "momo-techscout-sandbox:wave1"
+SANDBOX_IMAGE = DEFAULT_SANDBOX_IMAGE
 
 
 @dataclass(frozen=True)

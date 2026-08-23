@@ -16,6 +16,7 @@ ImageRef = Annotated[
         pattern=r"^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*$",
     ),
 ]
+DEFAULT_SANDBOX_IMAGE: ImageRef = "momo-techscout-sandbox:wave1"
 MemoryLimit = Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]*[kmg]$")]
 DockerNetwork = Annotated[
     str,
@@ -41,6 +42,7 @@ class ExecutionStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
     UNAVAILABLE = "unavailable"
 
 
@@ -128,6 +130,9 @@ class SandboxResult(TechScoutModel):
         elif self.status is ExecutionStatus.TIMED_OUT:
             if not self.timed_out or self.failure_code is not FailureCode.POC_TIMEOUT:
                 raise ValueError("timed out execution requires poc_timeout")
+        elif self.status is ExecutionStatus.CANCELLED:
+            if self.timed_out or self.failure_code is not FailureCode.EXPERIMENT_CANCELLED:
+                raise ValueError("cancelled execution requires experiment_cancelled")
         elif self.failure_code is None:
             raise ValueError("unsuccessful execution requires a failure code")
         return self

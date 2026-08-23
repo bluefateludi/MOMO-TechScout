@@ -232,6 +232,61 @@ def test_timeout_force_removes_daemon_owned_container(monkeypatch, tmp_path: Pat
     assert not list(run_workspace.glob(".techscout-container-*.cid"))
 
 
+def test_controlled_runner_cancels_inflight_container_with_fake_process(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    run_workspace = tmp_path / "run-001"
+    run_workspace.mkdir()
+    command = PocCompiler().compile(_plan(), _candidate(), PocStage.TEST)
+    cleanup_calls: list[list[str]] = []
+
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self, argv, **kwargs):
+            cidfile = Path(argv[argv.index("--cidfile") + 1])
+            cidfile.write_text("b" * 64, encoding="utf-8")
+            self.terminated = False
+
+        def communicate(self, timeout):
+            if self.terminated:
+                self.returncode = -15
+                return "", ""
+            raise subprocess.TimeoutExpired("docker", timeout)
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.terminated = True
+
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: (
+            cleanup_calls.append(argv)
+            or subprocess.CompletedProcess(argv, 0, "", "")
+        ),
+    )
+    probes = iter((False, False, True))
+
+    result = DockerCliRunner(tmp_path).run(
+        command,
+        run_workspace,
+        cancel_requested=lambda: next(probes),
+    )
+
+    assert result.status is ExecutionStatus.CANCELLED
+    assert result.failure_code is FailureCode.EXPERIMENT_CANCELLED
+    assert cleanup_calls == [
+        ["docker", "rm", "--force", "b" * 64],
+        ["docker", "rm", "--force", "b" * 64],
+    ]
+    assert not list(run_workspace.glob(".techscout-container-*.cid"))
+
+
 def test_fake_runner_is_deterministic_fifo(tmp_path: Path) -> None:
     command = PocCompiler().compile(_plan(), _candidate(), PocStage.TEST)
     fake = FakeSandboxRunner()

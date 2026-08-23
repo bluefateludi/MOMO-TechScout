@@ -1,9 +1,10 @@
 """Docker CLI runner with explicit argv and deterministic fake."""
 
+import re
 import subprocess
 import time
-import re
 from collections import defaultdict, deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -21,7 +22,14 @@ from paper_agent.techscout.sandbox.types import (
 
 
 class SandboxRunner(Protocol):
-    def run(self, command: CompiledCommand, run_workspace: Path) -> SandboxResult: ...
+    def run(
+        self,
+        command: CompiledCommand,
+        run_workspace: Path,
+        *,
+        timeout_seconds: float | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> SandboxResult: ...
 
 
 class DockerCliRunner:
@@ -94,17 +102,42 @@ class DockerCliRunner:
         argv.extend((command.image, *command.argv))
         return argv
 
-    def run(self, command: CompiledCommand, run_workspace: Path) -> SandboxResult:
+    def run(
+        self,
+        command: CompiledCommand,
+        run_workspace: Path,
+        *,
+        timeout_seconds: float | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> SandboxResult:
         workspace = run_workspace.resolve(strict=True)
         cidfile = workspace / f".techscout-container-{uuid4().hex}.cid"
         argv = self.docker_argv(command, workspace, cidfile=cidfile)
         started = time.monotonic()
+        effective_timeout = min(
+            self._limits.timeout_seconds,
+            timeout_seconds if timeout_seconds is not None else self._limits.timeout_seconds,
+        )
+        if cancel_requested is not None and cancel_requested():
+            return _cancelled_result(command, started)
+        if cancel_requested is not None:
+            try:
+                return self._run_controlled(
+                    command,
+                    argv,
+                    cidfile,
+                    started=started,
+                    timeout_seconds=effective_timeout,
+                    cancel_requested=cancel_requested,
+                )
+            finally:
+                cidfile.unlink(missing_ok=True)
         try:
             completed = subprocess.run(
                 argv,
                 capture_output=True,
                 text=True,
-                timeout=self._limits.timeout_seconds,
+                timeout=effective_timeout,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -132,6 +165,8 @@ class DockerCliRunner:
         finally:
             cidfile.unlink(missing_ok=True)
 
+        if cancel_requested is not None and cancel_requested():
+            return _cancelled_result(command, started)
         succeeded = completed.returncode == 0
         return SandboxResult(
             command=command,
@@ -143,6 +178,85 @@ class DockerCliRunner:
             stderr=_bounded_text(completed.stderr, self._limits.output_bytes),
             failure_code=None if succeeded else FailureCode.POC_NONZERO_EXIT,
         )
+
+    def _run_controlled(
+        self,
+        command: CompiledCommand,
+        argv: list[str],
+        cidfile: Path,
+        *,
+        started: float,
+        timeout_seconds: float,
+        cancel_requested: Callable[[], bool],
+    ) -> SandboxResult:
+        """Poll a Docker CLI process so cancellation can stop the owned container."""
+        try:
+            process = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError as exc:
+            return SandboxResult(
+                command=command,
+                status=ExecutionStatus.UNAVAILABLE,
+                exit_code=None,
+                timed_out=False,
+                duration_ms=_duration_ms(started),
+                stderr=_bounded_text(str(exc), self._limits.output_bytes),
+                failure_code=FailureCode.TOOL_UNAVAILABLE,
+            )
+
+        deadline = started + timeout_seconds
+        while True:
+            if cancel_requested():
+                self._stop_controlled_process(process, cidfile)
+                return _cancelled_result(command, started)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._stop_controlled_process(process, cidfile)
+                return SandboxResult(
+                    command=command,
+                    status=ExecutionStatus.TIMED_OUT,
+                    exit_code=None,
+                    timed_out=True,
+                    duration_ms=_duration_ms(started),
+                    failure_code=FailureCode.POC_TIMEOUT,
+                )
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+            if cancel_requested():
+                self._stop_controlled_process(process, cidfile)
+                return _cancelled_result(command, started)
+            succeeded = process.returncode == 0
+            return SandboxResult(
+                command=command,
+                status=(
+                    ExecutionStatus.SUCCEEDED if succeeded else ExecutionStatus.FAILED
+                ),
+                exit_code=process.returncode,
+                timed_out=False,
+                duration_ms=_duration_ms(started),
+                stdout=_bounded_text(stdout, self._limits.output_bytes),
+                stderr=_bounded_text(stderr, self._limits.output_bytes),
+                failure_code=None if succeeded else FailureCode.POC_NONZERO_EXIT,
+            )
+
+    def _stop_controlled_process(self, process: subprocess.Popen, cidfile: Path) -> None:
+        self._force_remove_container(cidfile)
+        try:
+            process.terminate()
+            process.communicate(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+                process.communicate(timeout=1)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        self._force_remove_container(cidfile)
 
     def _force_remove_container(self, cidfile: Path) -> None:
         try:
@@ -174,15 +288,37 @@ class FakeSandboxRunner:
         key = (result.command.recipe_id, result.command.stage)
         self._results[key].append(result)
 
-    def run(self, command: CompiledCommand, run_workspace: Path) -> SandboxResult:
+    def run(
+        self,
+        command: CompiledCommand,
+        run_workspace: Path,
+        *,
+        timeout_seconds: float | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> SandboxResult:
         self.calls.append((command, run_workspace))
+        if cancel_requested is not None and cancel_requested():
+            return _cancelled_result(command, time.monotonic())
         key = (command.recipe_id, command.stage)
         if not self._results[key]:
             raise LookupError(f"no fake result queued for {key}")
         result = self._results[key].popleft()
         if result.command != command:
             raise ValueError("queued fake result does not match compiled command")
+        if cancel_requested is not None and cancel_requested():
+            return _cancelled_result(command, time.monotonic())
         return result
+
+
+def _cancelled_result(command: CompiledCommand, started: float) -> SandboxResult:
+    return SandboxResult(
+        command=command,
+        status=ExecutionStatus.CANCELLED,
+        exit_code=None,
+        timed_out=False,
+        duration_ms=_duration_ms(started),
+        failure_code=FailureCode.EXPERIMENT_CANCELLED,
+    )
 
 
 def _duration_ms(started: float) -> int:
