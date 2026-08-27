@@ -118,6 +118,37 @@ def test_manifest_verification_reports_input_and_metric_regressions() -> None:
     assert any("retrieval.summary.hybrid.recall_at_k" in error for error in errors)
 
 
+def test_manifest_verification_uses_platform_neutral_text_hashes(
+    tmp_path: Path,
+) -> None:
+    evaluation_fixture = tmp_path / "evaluation.json"
+    retrieval_fixture = tmp_path / "retrieval.json"
+    evaluation_fixture.write_bytes(b'[\r\n  {"case_id": "one"}\r\n]\r\n')
+    retrieval_fixture.write_bytes(b'[\r\n  {"case_id": "two"}\r\n]\r\n')
+    manifest = {
+        "baseline": "test-baseline",
+        "inputs": {
+            "evaluation_fixture": {
+                "sha256": "4c5fc68b3c4d8945ff6f0573e4063b8ddee2cc5761a4178475fa4bdd71a416e3"
+            },
+            "retrieval_fixture": {
+                "sha256": "94422f63fbea544b67ec22d217623950f3548602d312ba7771e881f106198126"
+            },
+        },
+        "parameters": {"k": 3},
+        "expected": {},
+        "numeric_tolerance": 0.0,
+    }
+    result = {"baseline": "test-baseline", "inputs": {"k": 3}}
+
+    assert verify_baseline(
+        result,
+        manifest=manifest,
+        evaluation_fixture=evaluation_fixture,
+        retrieval_fixture=retrieval_fixture,
+    ) == []
+
+
 def test_check_cli_returns_pass_without_corrupting_json_stdout() -> None:
     result = subprocess.run(
         [
