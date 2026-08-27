@@ -1,4 +1,4 @@
-import type { ApiErrorBody, ApiResponse, DecisionContext, TechScoutApi, TechScoutCandidate, TechScoutCreateRunRequest, TechScoutEvidence, TechScoutReport, TechScoutRunDetail, TechScoutRunList, TechScoutRunSummary, TracePage } from "./contracts";
+import type { ApiErrorBody, ApiResponse, DecisionContext, DecisionWorkflow, RequirementsReviewRequest, TechScoutApi, TechScoutCandidate, TechScoutCreateRunRequest, TechScoutEvidence, TechScoutReport, TechScoutRunDetail, TechScoutRunList, TechScoutRunSummary, TracePage } from "./contracts";
 import { ApiError, messageForCode } from "./client";
 
 async function request<T>(path: string, init?: RequestInit): Promise<ApiResponse<T>> {
@@ -17,6 +17,10 @@ export const techScoutHttpApi: TechScoutApi = {
   listRuns: () => request<TechScoutRunList>("/runs"),
   createRun: (body: TechScoutCreateRunRequest) => request<TechScoutRunSummary>("/runs", { method: "POST", body: JSON.stringify(body) }),
   getDecisionContext: (id) => request<DecisionContext>(`/runs/${encodeURIComponent(id)}/decision-context`),
+  getWorkflow: (id) => request<DecisionWorkflow>(`/runs/${encodeURIComponent(id)}/workflow`),
+  reviewRequirements: (id, body: RequirementsReviewRequest, commandId) => request<DecisionWorkflow>(`/runs/${encodeURIComponent(id)}/workflow/requirements-review`, { method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": commandId } }),
+  confirmRequirements: (id, commandId) => request<DecisionWorkflow>(`/runs/${encodeURIComponent(id)}/workflow/confirm-requirements`, { method: "POST", headers: { "Idempotency-Key": commandId } }),
+  confirmCriteria: (id, contractId, commandId) => request<DecisionWorkflow>(`/runs/${encodeURIComponent(id)}/workflow/confirm-criteria`, { method: "POST", body: JSON.stringify({ contract_id: contractId }), headers: { "Idempotency-Key": commandId } }),
   getRun: (id) => request<TechScoutRunDetail>(`/runs/${encodeURIComponent(id)}`),
   getReport: (id) => request<TechScoutReport>(`/runs/${encodeURIComponent(id)}/report`),
   getCandidate: (id, candidateId) => request<TechScoutCandidate>(`/runs/${encodeURIComponent(id)}/candidates/${encodeURIComponent(candidateId)}`),
