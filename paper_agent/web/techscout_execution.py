@@ -69,7 +69,10 @@ from paper_agent.techscout.runtime_skills import fixed_skill_registry
 from paper_agent.techscout.context import CandidateContextData, ContextEngine, ContextStage
 from paper_agent.techscout.research import (
     AcquisitionState,
+    ConservativeFactExtractionAdapter,
+    FactStance,
     LiveEvidenceResearchService,
+    ResearchDelivery,
     hero_case_policy,
 )
 from paper_agent.techscout.sandbox.recipes import RecipeRegistry
@@ -452,14 +455,26 @@ class DeterministicStageServices:
             for item in self.poc_results
             if item.status is PocStatus.PASSED
         }
+        constraint_statuses = getattr(self, "constraint_statuses", {})
+        eligible_ids = {
+            candidate_id
+            for candidate_id in passed_ids
+            if not constraint_statuses
+            or all(
+                constraint_statuses.get(candidate_id, {}).get(constraint)
+                is ConstraintStatus.SATISFIED
+                for constraint in state.request.hard_constraints
+            )
+        }
         candidate = next(
-            (item for item in state.request.candidates if item.candidate_id in passed_ids),
+            (item for item in state.request.candidates if item.candidate_id in eligible_ids),
             state.request.candidates[0],
         )
-        evidence_by_candidate_constraint = {
-            (item.candidate_id, item.constraint): item.evidence_id
-            for item in self.evidence
-        }
+        evidence_by_candidate_constraint: dict[tuple[str, str], list[str]] = {}
+        for evidence_item in self.evidence:
+            evidence_by_candidate_constraint.setdefault(
+                (evidence_item.candidate_id, evidence_item.constraint), []
+            ).append(evidence_item.evidence_id)
         default_summary = (
             "No safe winner is claimed because the frozen provider cache was used."
             if self.scenario == "cached_degradation"
@@ -471,25 +486,42 @@ class DeterministicStageServices:
             if self.scenario == "docker_unavailable"
             else "No safe winner is claimed because neither live nor cached evidence is available."
             if self.scenario == "research_unavailable"
+            else "No safe winner is claimed because authoritative evidence does not establish every must-have."
+            if self.scenario == "insufficient_evidence"
             else "No safe winner is claimed because the reviewed PoC failed after bounded recovery."
             if self.scenario == "verification_failed"
             else "Live evidence and reviewed Docker PoCs satisfy the Hero Case gates; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
-            if self.scenario == "verified" and passed_ids
+            if self.scenario == "verified" and eligible_ids
             else "All supported candidates passed frozen evidence and deterministic local PoC validation; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
-            if passed_ids
+            if eligible_ids
             else "The first deterministic PoC attempt requires one bounded recovery."
         )
         candidate, summary, model_tokens = self._decision_report_contribution(
-            state, passed_ids=passed_ids, default_candidate=candidate,
+            state, passed_ids=eligible_ids, default_candidate=candidate,
             default_summary=default_summary,
         )
         model_limitation = getattr(self, "model_authority_limitation", None)
         explicit_limited = self.scenario in {
             "cached_degradation", "verified_limited", "research_only",
-            "docker_unavailable", "research_unavailable",
+            "docker_unavailable", "research_unavailable", "insufficient_evidence",
         } or model_limitation is not None
-        passed = candidate.candidate_id in passed_ids
+        passed = candidate.candidate_id in eligible_ids
         limited = explicit_limited or not passed
+
+        def constraint_status(candidate_id: str, constraint: str, name: str) -> ConstraintStatus:
+            if _recipe_for(name) is None or candidate_id not in passed_ids:
+                return ConstraintStatus.UNKNOWN
+            if self.scenario in {
+                "cached_degradation", "verified_limited", "docker_unavailable",
+                "research_unavailable",
+            }:
+                return ConstraintStatus.UNKNOWN
+            if constraint_statuses:
+                return constraint_statuses.get(candidate_id, {}).get(
+                    constraint, ConstraintStatus.UNKNOWN
+                )
+            return ConstraintStatus.UNKNOWN if limited else ConstraintStatus.SATISFIED
+
         report = DecisionReport(
             report_id=f"report:{state.run_id.split(':', 1)[1]}",
             run_id=state.run_id,
@@ -500,15 +532,11 @@ class DeterministicStageServices:
                 ConstraintResult(
                     candidate_id=item.candidate_id,
                     constraint=constraint,
-                    status=(
-                        ConstraintStatus.UNKNOWN
-                        if limited or _recipe_for(item.name) is None
-                        else ConstraintStatus.SATISFIED
-                    ),
-                    evidence_ids=(
-                        ()
-                        if limited or _recipe_for(item.name) is None
-                        else (evidence_by_candidate_constraint[(item.candidate_id, constraint)],)
+                    status=constraint_status(item.candidate_id, constraint, item.name),
+                    evidence_ids=tuple(
+                        evidence_by_candidate_constraint.get(
+                            (item.candidate_id, constraint), ()
+                        )
                     ),
                     reason=(
                         "Frozen cache fallback limits the decision."
@@ -521,6 +549,8 @@ class DeterministicStageServices:
                         if self.scenario == "docker_unavailable"
                         else "Live and cached evidence are unavailable."
                         if self.scenario == "research_unavailable"
+                        else "Authoritative evidence does not establish this must-have."
+                        if self.scenario == "insufficient_evidence"
                         else "The reviewed PoC failed after bounded recovery."
                         if self.scenario == "verification_failed"
                         else "Exact model revision and provider token authority are unavailable."
@@ -544,6 +574,8 @@ class DeterministicStageServices:
                 if self.scenario == "docker_unavailable"
                 else ("live_evidence_unavailable",)
                 if self.scenario == "research_unavailable"
+                else ("insufficient_must_have_evidence",)
+                if self.scenario == "insufficient_evidence"
                 else ("verification_failed",)
                 if self.scenario == "verification_failed"
                 else (model_limitation,)
@@ -606,14 +638,22 @@ class DeterministicStageServices:
                 code=(
                     FailureCode.POC_RECIPE_UNSUPPORTED
                     if self.scenario == "research_only"
+                    else FailureCode.REPORT_EVIDENCE_INVALID
+                    if self.scenario == "insufficient_evidence"
                     else FailureCode.TOOL_UNAVAILABLE
                 ),
                 stage=(
                     FailureStage.POC_PLANNING
                     if self.scenario == "research_only"
+                    else FailureStage.VALIDATION
+                    if self.scenario == "insufficient_evidence"
                     else FailureStage.POC_EXECUTION
                 ),
-                message="The requested live verification boundary is unavailable.",
+                message=(
+                    "No candidate has authoritative evidence for every must-have."
+                    if self.scenario == "insufficient_evidence"
+                    else "The requested live verification boundary is unavailable."
+                ),
                 recoverable=False,
                 recovery_action=RecoveryAction.PUBLISH_LIMITED_RESULT,
                 attempt=1,
@@ -659,6 +699,14 @@ class DeterministicStageServices:
             "source_acquisition_states": {
                 key: value.value
                 for key, value in getattr(self, "source_acquisition_states", {}).items()
+            },
+            "constraint_statuses": {
+                candidate_id: {
+                    constraint: status.value for constraint, status in statuses.items()
+                }
+                for candidate_id, statuses in getattr(
+                    self, "constraint_statuses", {}
+                ).items()
             },
             "failed_poc_stage": {
                 key: value.value
@@ -713,6 +761,15 @@ class DeterministicStageServices:
                 key: AcquisitionState(value)
                 for key, value in payload.get("source_acquisition_states", {}).items()
             }
+            self.constraint_statuses = {
+                candidate_id: {
+                    constraint: ConstraintStatus(status)
+                    for constraint, status in statuses.items()
+                }
+                for candidate_id, statuses in payload.get(
+                    "constraint_statuses", {}
+                ).items()
+            }
 
 
 class VerifiedStageServices:
@@ -735,6 +792,7 @@ class VerifiedStageServices:
     ) -> None:
         self.acquisition_states: dict[str, AcquisitionState] = {}
         self.source_acquisition_states: dict[str, AcquisitionState] = {}
+        self.constraint_statuses: dict[str, dict[str, ConstraintStatus]] = {}
         self._failed_poc_stage: dict[str, PocStage] = {}
         self.run_dir = kwargs["run_dir"]
         self.progress_sink = kwargs["progress_sink"]
@@ -763,6 +821,7 @@ class VerifiedStageServices:
         self.model_completion_tokens: int | None = None
         self.model_total_tokens: int | None = None
         self.model_revision: str | None = None
+        self._fact_extractor = ConservativeFactExtractionAdapter()
         DeterministicStageServices._load_workspace(self)
 
     def _workspace_path(self) -> Path:
@@ -824,8 +883,7 @@ class VerifiedStageServices:
             )
             self.acquisition_states[candidate.candidate_id] = delivery.research.state
             self.sources.extend(delivery.research.documents)
-            selected_chunks = tuple(delivery.context.chunks)
-            self.chunks.extend(selected_chunks)
+            self.chunks.extend(delivery.research.chunks)
             attempt_by_reference = {
                 item.reference.rstrip("/"): item.state
                 for item in delivery.research.attempts
@@ -835,26 +893,11 @@ class VerifiedStageServices:
                 self.source_acquisition_states[source.source_id] = attempt_by_reference.get(
                     source.url.rstrip("/"), delivery.research.state
                 )
-            if delivery.context.chunks:
-                selected = delivery.context.chunks[0]
-                source = next(
-                    item for item in delivery.context.sources
-                    if item.source_id == selected.source_id
-                )
-                self.evidence.extend(
-                    CandidateEvidence(
-                        evidence_id=f"evidence:{_slug(candidate.name)}:{index:02d}",
-                        candidate_id=candidate.candidate_id,
-                        constraint=constraint,
-                        claim=selected.text,
-                        source_ids=(source.source_id,),
-                        chunk_ids=(selected.chunk_id,),
-                        kind=EvidenceKind.RETRIEVED_FACT,
-                    )
-                    for index, constraint in enumerate(
-                        state.request.hard_constraints, start=1
-                    )
-                )
+            self._record_constraint_evidence(
+                candidate=candidate,
+                constraints=state.request.hard_constraints,
+                delivery=delivery,
+            )
             self.trace_sink(
                 "tool",
                 "research",
@@ -873,6 +916,49 @@ class VerifiedStageServices:
             }),
             tool_calls=len(state.request.candidates),
         )
+
+    def _record_constraint_evidence(
+        self,
+        *,
+        candidate: Candidate,
+        constraints: tuple[str, ...],
+        delivery: ResearchDelivery,
+    ) -> None:
+        statuses: dict[str, ConstraintStatus] = {}
+        template_query = delivery.research.query_plan.queries[0]
+        for constraint in constraints:
+            stances: set[FactStance] = set()
+            seen: set[tuple[str, str, FactStance]] = set()
+            query = template_query.model_copy(update={"question": constraint})
+            for chunk in delivery.research.chunks:
+                for draft in self._fact_extractor.extract(query=query, excerpt=chunk.text):
+                    key = (chunk.source_id, draft.statement, draft.stance)
+                    if key in seen or draft.stance in stances:
+                        continue
+                    seen.add(key)
+                    stances.add(draft.stance)
+                    identity = "\x1e".join(
+                        (candidate.candidate_id, constraint, chunk.chunk_id, draft.statement)
+                    )
+                    self.evidence.append(
+                        CandidateEvidence(
+                            evidence_id=f"evidence:{_slug(candidate.name)}:{_sha(identity)[:16]}",
+                            candidate_id=candidate.candidate_id,
+                            constraint=constraint,
+                            claim=draft.statement,
+                            source_ids=(chunk.source_id,),
+                            chunk_ids=(chunk.chunk_id,),
+                            kind=EvidenceKind.RETRIEVED_FACT,
+                        )
+                    )
+            statuses[constraint] = (
+                ConstraintStatus.SATISFIED
+                if stances == {FactStance.AFFIRMS}
+                else ConstraintStatus.NOT_SATISFIED
+                if stances == {FactStance.DENIES}
+                else ConstraintStatus.UNKNOWN
+            )
+        self.constraint_statuses[candidate.candidate_id] = statuses
 
     def _plan(self, state: ResearchState) -> StageResult:
         plan = ResearchPlan(
@@ -1069,6 +1155,16 @@ class VerifiedStageServices:
                 if self.poc_results and all(item.status is PocStatus.RESEARCH_ONLY for item in self.poc_results)
                 else "docker_unavailable"
             )
+        elif not any(
+            all(
+                self.constraint_statuses.get(item.candidate_id, {}).get(constraint)
+                is ConstraintStatus.SATISFIED
+                for constraint in state.request.hard_constraints
+            )
+            for item in self.poc_results
+            if item.status is PocStatus.PASSED
+        ):
+            self.scenario = "insufficient_evidence"
         else:
             self.scenario = "verified"
         return DeterministicStageServices._validate(self, state)

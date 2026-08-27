@@ -64,14 +64,21 @@ class _Search:
 
 
 class _Fetch:
-    def __init__(self, cache: bool = False) -> None:
+    def __init__(
+        self,
+        cache: bool = False,
+        content: str = (
+            "Python 3.11 collection create upsert query metadata filter "
+            "persistence reopen"
+        ),
+    ) -> None:
         self.cache = cache
+        self.content = content
 
     def fetch(self, request):
-        content = "Python 3.11 collection create upsert query metadata filter persistence reopen"
         return FetchOutput(
             url=request.url, candidate_id=request.candidate_id,
-            media_type="text/plain", content=content, size_bytes=len(content),
+            media_type="text/plain", content=self.content, size_bytes=len(self.content),
             provenance=_provenance(self.cache),
         )
 
@@ -186,6 +193,7 @@ def _factory(
     *,
     cache: bool = False,
     github_cache: bool | None = None,
+    fetch_content: str | None = None,
     poc: _Poc | None = None,
     generation_provider=None,
     model_authority_required: bool = False,
@@ -198,7 +206,8 @@ def _factory(
     )
     context_engine = ContextEngine(HybridContextRetriever(retrieval))
     research = LiveEvidenceResearchService(
-        search=_Search(cache), fetch=_Fetch(cache),
+        search=_Search(cache),
+        fetch=_Fetch(cache, fetch_content) if fetch_content is not None else _Fetch(cache),
         github=_GitHub(cache if github_cache is None else github_cache),
         context_engine=context_engine,
     )
@@ -469,6 +478,75 @@ def test_cache_degradation_and_docker_unavailable_are_honest_terminal_results(tm
     detail, report, _, _ = _run(tmp_path / "docker", _factory(poc=_Poc("unavailable")))
     assert detail["status"] == "completed_with_limitations"
     assert "docker_unavailable" in report["limitations"]
+
+
+def test_public_verified_path_refuses_when_both_supported_candidates_lack_must_have_evidence(
+    tmp_path: Path,
+) -> None:
+    provider = _GenerationProvider("candidate:chroma")
+    detail, report, evidence, _ = _run(
+        tmp_path,
+        _factory(
+            fetch_content="Python 3.11 local client documentation.",
+            generation_provider=provider,
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
+    artifact_root = tmp_path / "outputs" / "techscout" / detail["id"]
+    manifest = json.loads((artifact_root / "run_manifest.json").read_text(encoding="utf-8"))
+
+    assert detail["status"] == "completed_with_limitations"
+    assert detail["synthetic"] is False
+    assert report["verdict"] == "no_safe_winner"
+    assert report["recommendation"] is None
+    assert report["limitations"] == ["insufficient_must_have_evidence"]
+    assert {item["status"] for item in report["constraints"]} == {"unknown"}
+    assert evidence == []
+    assert provider.calls == []
+    assert manifest["terminal_status"] == "completed_with_limitations"
+    assert manifest["limitation_codes"] == ["insufficient_must_have_evidence"]
+    sealed_trace = [
+        json.loads(line)
+        for line in (artifact_root / "traces.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminal = next(
+        item for item in sealed_trace if item.get("name") == "terminal.completed"
+    )
+    assert terminal["attributes"]["terminal_status"] == "completed_with_limitations"
+    assert terminal["attributes"]["gate_outcome"] == "limited"
+    assert any(
+        item.get("name") == "error.classified"
+        and item["attributes"]["failure_code"] == "report_evidence_invalid"
+        for item in sealed_trace
+    )
+    assert any(
+        item.get("name") == "validation.completed"
+        and item["attributes"]["gate_outcome"] == "limited"
+        for item in sealed_trace
+    )
+
+
+def test_public_verified_path_preserves_denials_without_recommending_a_candidate(
+    tmp_path: Path,
+) -> None:
+    detail, report, evidence, _ = _run(
+        tmp_path,
+        _factory(
+            fetch_content=(
+                "Collection is not supported. Upsert query is not supported. "
+                "Metadata filter is not supported. Persistence reopen is not supported."
+            )
+        ),
+    )
+
+    assert detail["status"] == "completed_with_limitations"
+    assert report["verdict"] == "no_safe_winner"
+    assert report["recommendation"] is None
+    assert {item["status"] for item in report["constraints"]} == {"not_satisfied"}
+    assert evidence
+    assert {item["kind"] for item in evidence} == {"retrieved_fact"}
+    assert {item["acquisition_state"] for item in evidence} == {"live"}
 
 
 def test_mixed_source_authority_does_not_promote_cached_evidence_to_live(tmp_path: Path) -> None:
