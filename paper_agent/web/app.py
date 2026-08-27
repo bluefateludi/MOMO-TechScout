@@ -179,7 +179,7 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
-    resolved_web_dist = web_dist.resolve() if web_dist else Path(__file__).parents[2] / "web" / "dist"
+    resolved_web_dist = web_dist.resolve() if web_dist else Path(__file__).parent / "static"
     if resolved_web_dist.is_dir() and (resolved_web_dist / "index.html").is_file():
         assets = resolved_web_dist / "assets"
         if assets.is_dir():

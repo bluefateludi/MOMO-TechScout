@@ -46,6 +46,7 @@ Then install, build, and serve:
 python -m pip install -e .
 cd web
 npm ci
+npm run contracts:check
 npm run build
 cd ..
 techscout serve
@@ -64,6 +65,11 @@ Compose publishes only `127.0.0.1:8000`, persists local run data in a named volu
 If `techscout` is not found or a repository script reports a missing Python module after installation, reactivate the same `.venv` in the current shell. If Vite rejects the Node runtime, upgrade to one of the versions listed above. If Compose cannot connect to the Docker daemon, start Docker Engine or Docker Desktop and confirm both client and server versions appear in `docker version` before retrying.
 
 `python -m paper_agent.web` remains a compatible Web entry point. The historical `paper-agent` command and `paper_agent` imports are also preserved for the Scholar workflow; they are not presented as a TechScout evaluation baseline.
+
+The Web production assets are emitted into `paper_agent/web/static` and included
+in the wheel. Build the Web application before creating a distributable wheel;
+CI verifies the installed wheel from outside the checkout and checks both CLI
+help and the loopback-served React root.
 
 ## Architecture
 

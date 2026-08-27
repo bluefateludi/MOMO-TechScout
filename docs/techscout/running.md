@@ -25,6 +25,7 @@ Use `source .venv/bin/activate` on macOS/Linux or `.\.venv\Scripts\Activate.ps1`
 python -m pip install -e .
 cd web
 npm ci
+npm run contracts:check
 npm run build
 cd ..
 techscout doctor
@@ -62,6 +63,17 @@ techscout serve --host 0.0.0.0 --allow-network
 ```
 
 That opt-in exposes an unauthenticated local product and must be protected by the operator's network boundary. The compatibility command `python -m paper_agent.web` remains available. The installed `paper-agent` console script still addresses the historical Scholar workflow.
+
+`npm run build` writes the production assets into the Python package tree so a
+wheel built afterwards serves the same UI. A release-style local check is:
+
+```console
+python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+python -m pip install --force-reinstall --no-deps dist/paper_agent-*.whl
+```
+
+Run the installed commands from a directory outside the checkout when checking
+the wheel; otherwise the source tree can shadow the installed package.
 
 For an optional API/worker process split backed by Redis, see
 [Backend reliability](backend-reliability.md). That mode is explicitly
