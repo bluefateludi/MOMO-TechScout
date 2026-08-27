@@ -624,14 +624,27 @@ class RunRegistry:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 """SELECT status,cancel_requested,deadline_at,worker_id,
-                          lease_token,fencing_token
+                          lease_token,fencing_token,projection_path
                    FROM techscout_runs WHERE id=?""", (run_id,),
             ).fetchone()
             if row is None:
                 db.rollback()
                 raise WebError(404, "run_not_found")
             if row["status"] not in {"queued", "running", "interrupted"}:
-                db.rollback()
+                if (
+                    fencing_token is not None
+                    and row["fencing_token"] == fencing_token
+                    and row["status"] == status
+                    and row["projection_path"] == projection_path
+                ):
+                    db.rollback()
+                    return self.get_techscout(run_id)
+                self._append_event_in_transaction(
+                    db, run_id, event_type="run", stage="terminal",
+                    status="write_rejected",
+                    label="A competing terminal write was rejected by fencing.",
+                )
+                db.commit()
                 raise ConflictError()
             if row["status"] == "running" and not self._techscout_owner_matches(
                 row,
@@ -639,7 +652,12 @@ class RunRegistry:
                 lease_token=lease_token,
                 fencing_token=fencing_token,
             ):
-                db.rollback()
+                self._append_event_in_transaction(
+                    db, run_id, event_type="run", stage="terminal",
+                    status="write_rejected",
+                    label="A stale owner terminal write was rejected by fencing.",
+                )
+                db.commit()
                 raise ConflictError()
             if row["cancel_requested"]:
                 status = "cancelled"
@@ -975,12 +993,40 @@ class RunRegistry:
         tool: str | None = None,
         duration_ms: int | None = None,
         secrets: tuple[str, ...] = (),
+        worker_id: str | None = None,
+        lease_token: str | None = None,
+        fencing_token: int | None = None,
     ) -> None:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if not self._run_exists(db, run_id):
                 db.rollback()
                 raise WebError(404, "run_not_found")
+            owner_guard = any(
+                value is not None
+                for value in (worker_id, lease_token, fencing_token)
+            )
+            if owner_guard:
+                row = db.execute(
+                    """SELECT status,worker_id,lease_token,fencing_token
+                       FROM techscout_runs WHERE id=?""",
+                    (run_id,),
+                ).fetchone()
+                if row is None or row["status"] != "running" or not (
+                    worker_id is not None
+                    and lease_token is not None
+                    and fencing_token is not None
+                    and row["worker_id"] == worker_id
+                    and row["lease_token"] == lease_token
+                    and row["fencing_token"] == fencing_token
+                ):
+                    self._append_event_in_transaction(
+                        db, run_id, event_type="run", stage=stage,
+                        status="write_rejected",
+                        label="A stale owner Trace write was rejected by fencing.",
+                    )
+                    db.commit()
+                    raise ConflictError()
             self._append_event_in_transaction(
                 db, run_id, event_type=event_type, stage=stage, status=status,
                 label=label, skill=skill, tool=tool, duration_ms=duration_ms,
