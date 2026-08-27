@@ -1,1 +1,2 @@
+docs/evaluations/artifacts/** -text
 paper_agent/web/static/** text eol=lf
