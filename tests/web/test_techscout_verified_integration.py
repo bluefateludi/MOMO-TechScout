@@ -8,9 +8,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from paper_agent.config import Settings
 from paper_agent.evidence.hybrid import HybridEvidenceRetriever
 from paper_agent.evidence.retriever import LexicalCandidateSource
-from paper_agent.generation import StructuredGeneration
+from paper_agent.generation import (
+    GenerationFailureMetadata,
+    GenerationNetworkError,
+    StructuredGeneration,
+)
 from paper_agent.techscout.context import ContextEngine, HybridContextRetriever
 from paper_agent.techscout.errors import FailureCode
 from paper_agent.techscout.models import CacheStatus, PocArtifact, PocResult, PocStatus
@@ -28,6 +33,7 @@ from paper_agent.web.app import create_app
 from paper_agent.web.techscout_execution import ModelDecisionDraft, VerifiedStageServices
 from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
 from paper_agent.web.techscout_execution import TechScoutRunEngine
+from paper_agent.web.verified_composition import make_verified_services_factory
 
 
 NOW = datetime(2026, 8, 12, tzinfo=timezone.utc)
@@ -130,8 +136,20 @@ class _Poc:
 
 
 class _GenerationProvider:
-    def __init__(self, preferred_candidate_id: str | None) -> None:
+    def __init__(
+        self,
+        preferred_candidate_id: str | None,
+        *,
+        model: str = "qwen-exact-test-revision",
+        prompt_tokens: int | None = 41,
+        completion_tokens: int | None = 13,
+        total_tokens: int | None = 54,
+    ) -> None:
         self.preferred_candidate_id = preferred_candidate_id
+        self.model = model
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
         self.calls = []
 
     def generate_structured(self, **kwargs):
@@ -141,16 +159,38 @@ class _GenerationProvider:
                 preferred_candidate_id=self.preferred_candidate_id,
                 summary="Model-ranked only the candidates authorized by evidence and PoC.",
             ),
-            model="qwen-exact-test-revision",
-            prompt_tokens=41,
-            completion_tokens=13,
-            total_tokens=54,
+            model=self.model,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+            total_tokens=self.total_tokens,
             attempts=1,
             elapsed_seconds=0.01,
         )
 
 
-def _factory(*, cache: bool = False, github_cache: bool | None = None, poc: _Poc | None = None, generation_provider=None):
+class _UnavailableGenerationProvider:
+    def generate_structured(self, **kwargs):
+        del kwargs
+        raise GenerationNetworkError(
+            metadata=GenerationFailureMetadata(
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+                attempts=1,
+                elapsed_seconds=0.01,
+            )
+        )
+
+
+def _factory(
+    *,
+    cache: bool = False,
+    github_cache: bool | None = None,
+    poc: _Poc | None = None,
+    generation_provider=None,
+    model_authority_required: bool = False,
+    exact_model_revision: str | None = None,
+):
     poc = poc or _Poc()
     retrieval = HybridEvidenceRetriever(
         lexical_source=LexicalCandidateSource(), vector_source=None,
@@ -164,7 +204,10 @@ def _factory(*, cache: bool = False, github_cache: bool | None = None, poc: _Poc
     )
     return lambda **kwargs: VerifiedStageServices(
         research_service=research, context_engine=context_engine, poc_service=poc,
-        generation_provider=generation_provider, **kwargs
+        generation_provider=generation_provider,
+        model_authority_required=model_authority_required,
+        exact_model_revision=exact_model_revision,
+        **kwargs,
     )
 
 
@@ -241,7 +284,14 @@ def test_verified_happy_path_is_live_and_poc_verified(tmp_path: Path) -> None:
 
 def test_model_ranks_only_poc_authorized_candidates_and_reports_usage(tmp_path: Path) -> None:
     provider = _GenerationProvider("candidate:qdrant-local")
-    detail, report, _, _ = _run(tmp_path, _factory(generation_provider=provider))
+    detail, report, _, _ = _run(
+        tmp_path,
+        _factory(
+            generation_provider=provider,
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
     assert detail["status"] == "completed"
     assert report["recommendation"] == "qdrant-local"
     assert report["summary"].startswith("Model-ranked")
@@ -256,6 +306,122 @@ def test_model_ranks_only_poc_authorized_candidates_and_reports_usage(tmp_path: 
     assert terminal["attributes"]["completion_tokens"] == 13
     assert terminal["attributes"]["model_revision"] == "qwen-exact-test-revision"
     assert terminal["attributes"]["provider_usage_reported"] is True
+
+
+def test_required_model_authority_missing_publishes_honest_limited_result(
+    tmp_path: Path,
+) -> None:
+    detail, report, _, _ = _run(
+        tmp_path,
+        _factory(
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
+
+    assert detail["status"] == "completed_with_limitations"
+    assert report["verdict"] == "no_safe_winner"
+    assert report["recommendation"] is None
+    assert "model_authority_unavailable" in report["limitations"]
+
+
+def test_model_revision_or_usage_without_authority_cannot_publish_verified(
+    tmp_path: Path,
+) -> None:
+    mismatched = _GenerationProvider(
+        "candidate:qdrant-local", model="qwen-moving-alias"
+    )
+    _, mismatch_report, _, _ = _run(
+        tmp_path / "revision",
+        _factory(
+            generation_provider=mismatched,
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
+    zero_usage = _GenerationProvider(
+        "candidate:qdrant-local",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+    )
+    _, usage_report, _, _ = _run(
+        tmp_path / "usage",
+        _factory(
+            generation_provider=zero_usage,
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
+
+    assert "model_revision_unverified" in mismatch_report["limitations"]
+    assert "provider_usage_unverified" in usage_report["limitations"]
+
+
+def test_default_web_composition_never_spends_without_explicit_model_authority(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        dashscope_api_key="configured-secret",
+        dashscope_generation_model="qwen-exact-test-revision",
+    )
+    common = {
+        "run_dir": tmp_path / "run",
+        "progress_sink": lambda *args: None,
+    }
+    default_services = make_verified_services_factory(
+        output_root=tmp_path / "default-output",
+        state_root=tmp_path / "default-state",
+        settings_loader=lambda: settings,
+    )(**common)
+    authorized_services = make_verified_services_factory(
+        output_root=tmp_path / "authorized-output",
+        state_root=tmp_path / "authorized-state",
+        settings_loader=lambda: settings,
+        model_call_authorized=True,
+        exact_model_revision="qwen-exact-test-revision",
+    )(**{**common, "run_dir": tmp_path / "authorized-run"})
+
+    assert default_services._generation_provider is None
+    assert default_services._model_authority_required is True
+    assert authorized_services._generation_provider is not None
+
+
+def test_model_call_is_skipped_when_other_verified_authority_is_already_limited(
+    tmp_path: Path,
+) -> None:
+    provider = _GenerationProvider("candidate:qdrant-local")
+
+    detail, _, _, _ = _run(
+        tmp_path,
+        _factory(
+            cache=True,
+            generation_provider=provider,
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
+
+    assert detail["status"] == "completed_with_limitations"
+    assert provider.calls == []
+
+
+def test_model_provider_failure_terminalizes_with_a_sealed_limited_trace(
+    tmp_path: Path,
+) -> None:
+    detail, report, _, _ = _run(
+        tmp_path,
+        _factory(
+            generation_provider=_UnavailableGenerationProvider(),
+            model_authority_required=True,
+            exact_model_revision="qwen-exact-test-revision",
+        ),
+    )
+    artifact_root = tmp_path / "outputs" / "techscout" / detail["id"]
+
+    assert detail["status"] == "completed_with_limitations"
+    assert report["limitations"] == ["model_authority_unavailable"]
+    assert (artifact_root / "traces-manifest.json").is_file()
 
 
 def test_model_cannot_promote_research_only_candidate(tmp_path: Path) -> None:

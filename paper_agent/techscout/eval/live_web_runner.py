@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid5
+
+from fastapi.testclient import TestClient
 
 from paper_agent.config import Settings
-from paper_agent.generation import GenerationProviderError
 from paper_agent.techscout.eval.live_contracts import (
     DockerAuthority,
     LiveEvaluationCase,
@@ -18,9 +19,7 @@ from paper_agent.techscout.eval.live_phase1 import (
     LivePricingSnapshot,
     LiveProductObservation,
 )
-from paper_agent.web.registry import RunRegistry
-from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
-from paper_agent.web.techscout_execution import TechScoutRunEngine
+from paper_agent.web.app import create_app
 from paper_agent.web.verified_composition import make_verified_services_factory
 
 
@@ -66,55 +65,102 @@ class VerifiedWebLiveCaseRunner:
         run_directory.mkdir(parents=True, exist_ok=False)
         state_root = run_directory / "state"
         output_root = run_directory / "outputs"
-        registry = RunRegistry(state_root / "registry.sqlite3")
-        request = TechScoutCreateRunRequest.model_validate(
-            {
-                "question": case.request.question,
-                "project_context": case.request.project_context,
-                "environment": case.request.environment.model_dump(mode="json"),
-                "hard_constraints": list(case.request.hard_constraints),
-                "candidates": [
-                    {
-                        "name": item.name,
-                        "package_name": item.package_name,
-                        "requested_version": item.requested_version,
-                    }
-                    for item in case.request.candidates
-                ],
-                "mode": "verified",
-            }
-        )
-        run_id = str(uuid5(NAMESPACE_URL, f"{case.case_id}:{repetition}"))
-        registry.admit_techscout(run_id, request, capacity=1)
-        row = registry.claim_oldest_techscout()
-        if row is None:
-            raise LiveInfrastructureError("live smoke run was not claimable")
+        request = {
+            "question": case.request.question,
+            "project_context": case.request.project_context,
+            "environment": case.request.environment.model_dump(mode="json"),
+            "hard_constraints": list(case.request.hard_constraints),
+            "candidates": [
+                {
+                    "name": item.name,
+                    "package_name": item.package_name,
+                    "requested_version": item.requested_version,
+                }
+                for item in case.request.candidates
+            ],
+            "mode": "verified",
+        }
         factory = make_verified_services_factory(
             output_root=output_root,
             state_root=state_root,
             settings_loader=self._settings_loader,
             generation_max_tokens=self._maximum_completion_tokens,
+            model_call_authorized=True,
+            exact_model_revision=self._exact_model_revision,
         )
-        try:
-            bundle, _ = TechScoutRunEngine(
-                output_root,
-                registry,
-                verified_services_factory=factory,
-                verified_timeout_seconds=timeout_seconds,
-            ).run(row)
-        except GenerationProviderError as error:
-            raise LiveInfrastructureError(
-                f"model provider infrastructure failed:{error.code}"
-            ) from error
-        if not bundle.evidence or any(
-            item.acquisition_state != "live" for item in bundle.evidence
+        app = create_app(
+            state_root=state_root,
+            output_root=output_root,
+            demo_root=None,
+            web_dist=run_directory / "missing-web-dist",
+            settings_loader=self._settings_loader,
+            verified_services_factory=factory,
+            verified_timeout_seconds=timeout_seconds,
+        )
+        with TestClient(app) as client:
+            created = client.post("/api/v2/runs", json=request)
+            if created.status_code != 202:
+                raise LiveInfrastructureError("public Decision Context submission failed")
+            run_id = created.json()["id"]
+            requirements = [
+                {
+                    "requirement_id": f"requirement:must-have-{index}",
+                    "kind": "hard_constraint",
+                    "statement": statement,
+                }
+                for index, statement in enumerate(case.request.hard_constraints)
+            ]
+            review = client.post(
+                f"/api/v2/runs/{run_id}/workflow/requirements-review",
+                json={"requirements": requirements},
+                headers={"Idempotency-Key": f"{case.case_id}-{repetition}-review"},
+            )
+            confirmed = client.post(
+                f"/api/v2/runs/{run_id}/workflow/confirm-requirements",
+                headers={"Idempotency-Key": f"{case.case_id}-{repetition}-requirements"},
+            )
+            if review.status_code != 200 or confirmed.status_code != 200:
+                raise LiveInfrastructureError("public Requirements Review failed")
+            ready = client.post(
+                f"/api/v2/runs/{run_id}/workflow/confirm-criteria",
+                json={
+                    "contract_id": confirmed.json()["selection_criteria"]["contract_id"]
+                },
+                headers={"Idempotency-Key": f"{case.case_id}-{repetition}-criteria"},
+            )
+            if ready.status_code != 200 or ready.json()["state"] != "research_ready":
+                raise LiveInfrastructureError("public Research Ready gate was not established")
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                detail = client.get(f"/api/v2/runs/{run_id}").json()
+                if detail["status"] not in {"queued", "running"}:
+                    break
+                if time.monotonic() >= deadline:
+                    raise LiveInfrastructureError("public Verified run exceeded its timeout")
+                time.sleep(0.1)
+            if detail["status"] == "failed":
+                raise LiveInfrastructureError("public Verified run failed before authority")
+            report = client.get(f"/api/v2/runs/{run_id}/report").json()
+            evidence = client.get(f"/api/v2/runs/{run_id}/evidence").json()["items"]
+            workflow = client.get(f"/api/v2/runs/{run_id}/workflow").json()
+            workflow_events = client.get(
+                f"/api/v2/runs/{run_id}/workflow/events"
+            ).json()
+        if not evidence or any(
+            item["acquisition_state"] != "live" for item in evidence
         ):
             raise LiveInfrastructureError("cold-live research authority was not produced")
-        if bundle.report is None or not bundle.report.poc_results or any(
-            not item.verified for item in bundle.report.poc_results
+        if not report.get("poc_results") or any(
+            not item["verified"] for item in report["poc_results"]
         ):
             raise LiveInfrastructureError("real Docker PoC authority was not produced")
         artifact_root = output_root / "techscout" / run_id
+        (artifact_root / "decision-workflow.json").write_text(
+            json.dumps(workflow, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        (artifact_root / "decision-workflow-events.json").write_text(
+            json.dumps(workflow_events, indent=2, sort_keys=True), encoding="utf-8"
+        )
         terminal = next(
             item["attributes"]
             for item in reversed(
@@ -143,12 +189,14 @@ class VerifiedWebLiveCaseRunner:
             prompt_tokens * self._pricing.input_usd_per_million_tokens
             + completion_tokens * self._pricing.output_usd_per_million_tokens
         ) / 1_000_000
-        report = json.loads((artifact_root / "decision-report.json").read_text(encoding="utf-8"))
+        report = json.loads(
+            (artifact_root / "decision-report.json").read_text(encoding="utf-8")
+        )
         manifest = json.loads((artifact_root / "run_manifest.json").read_text(encoding="utf-8"))
         return LiveProductObservation(
             case_id=case.case_id,
             repetition=repetition,
-            product_status=bundle.detail.status,
+            product_status=detail["status"],
             model_revision=model_revision,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
