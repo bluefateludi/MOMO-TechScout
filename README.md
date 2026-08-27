@@ -105,6 +105,7 @@ The deterministic gate—not model prose—controls publishability. Unknown reci
 - [Run modes and operator guide](docs/techscout/running.md)
 - [V1 support matrix and security boundary](docs/techscout/support-and-safety.md)
 - [Final evaluation and browser acceptance authority](docs/techscout/final-delivery.md)
+- [Open-source reproduction gate](docs/acceptance/2026-08-27-open-source-reproduction-gate.md)
 - [Interview story and four STAR resume drafts](docs/techscout/interview-and-resume.md)
 - [Product-scope ADR](docs/decisions/0001-techscout-product-scope-and-support.md)
 
