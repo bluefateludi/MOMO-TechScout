@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from paper_agent.techscout.errors import FailureCode
 from paper_agent.techscout.experiments import (
+    ExecutionRequest,
     ExecutionTerminalStatus,
     ExperimentCheck,
     ExperimentRecipe,
@@ -73,6 +74,33 @@ def test_contracts_reject_unknown_fields() -> None:
             image="momo-techscout-sandbox:wave1",
             shell=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("recipe", {"recipe_id": "recipe:attacker@1"}),
+        ("command", ["sh", "-c", "whoami"]),
+        ("shell", True),
+        ("network_access", "host"),
+        ("filesystem", {"mount": "/"}),
+        ("tools", ["shell.exec"]),
+    ),
+)
+def test_execution_request_cannot_smuggle_unreviewed_capabilities(
+    field: str,
+    value: object,
+) -> None:
+    payload = {
+        "execution_id": "experiment:adversarial",
+        "subject_id": "subject:python-runtime",
+        "recipe_id": "recipe:python-runtime-offline@1",
+        "idempotency_key": "idempotency:adversarial",
+        field: value,
+    }
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ExecutionRequest.model_validate(payload)
 
 
 def test_terminal_contract_rejects_failure_code_mismatch() -> None:

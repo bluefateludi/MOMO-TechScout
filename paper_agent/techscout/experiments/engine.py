@@ -29,7 +29,10 @@ from paper_agent.techscout.experiments.contracts import (
     RecipeDisposition,
     SealedExecution,
 )
-from paper_agent.techscout.experiments.registry import ExperimentRecipeRegistry
+from paper_agent.techscout.experiments.registry import (
+    ExperimentRecipeRegistry,
+    UnsupportedExperimentRecipeError,
+)
 from paper_agent.techscout.sandbox.types import ExecutionStatus, SandboxResult
 
 
@@ -107,6 +110,10 @@ class ExperimentEngine:
         existing = self._load_existing(result_path, request_sha256)
         if existing is not None:
             return existing
+        self._raise_existing_denial(
+            execution_dir / "denial.json",
+            request_sha256,
+        )
 
         execution_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock_path = execution_dir / "execution.lock"
@@ -121,7 +128,28 @@ class ExperimentEngine:
             ) from exc
 
         try:
-            recipe = self._registry.get(request.recipe_id)
+            try:
+                recipe = self._registry.get(request.recipe_id)
+            except UnsupportedExperimentRecipeError:
+                denial = {
+                    "schema_version": "1.0",
+                    "execution_id": request.execution_id,
+                    "subject_id": request.subject_id,
+                    "recipe_id": request.recipe_id,
+                    "decision": "denied",
+                    "failure_code": FailureCode.POC_RECIPE_UNSUPPORTED.value,
+                    "reason": "Recipe is not reviewed and cannot execute.",
+                    "request_sha256": request_sha256,
+                    "runner_invoked": False,
+                }
+                _write_json_atomic(
+                    execution_dir / "denial.json",
+                    {
+                        "denial": denial,
+                        "denial_sha256": _sha256_model(denial),
+                    },
+                )
+                raise
             sealed = self._execute_once(
                 request,
                 recipe,
@@ -217,7 +245,10 @@ class ExperimentEngine:
                 ) as exc:  # the seam must fail closed into a sealed result
                     terminal_status = ExecutionTerminalStatus.FAILED
                     terminal_reason = (
-                        "The sandbox adapter failed before returning a result."
+                        "Experiment policy denied an unauthorized network, filesystem, "
+                        "or resource request."
+                        if isinstance(exc, (PermissionError, ValueError))
+                        else "The sandbox adapter failed before returning a result."
                     )
                     failure = ExecutionFailure(
                         code=(
@@ -473,6 +504,25 @@ class ExperimentEngine:
                 "stored Experiment terminal seal is invalid"
             )
         return sealed
+
+    def _raise_existing_denial(self, path: Path, request_sha256: str) -> None:
+        if not path.exists():
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        denial = payload.get("denial")
+        if not isinstance(denial, dict) or payload.get("denial_sha256") != _sha256_model(
+            denial
+        ):
+            raise InvalidExecutionSealError(
+                "stored Experiment denial seal is invalid"
+            )
+        if denial.get("request_sha256") != request_sha256:
+            raise IdempotencyConflictError(
+                "idempotency key is already denied for a different request"
+            )
+        raise UnsupportedExperimentRecipeError(
+            "Recipe is not reviewed and cannot execute"
+        )
 
 
 def _execution_dir(root: Path, idempotency_key: str) -> Path:

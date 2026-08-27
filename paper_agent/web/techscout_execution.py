@@ -921,6 +921,33 @@ class VerifiedStageServices:
         recoverable_failure: Failure | None = None
         by_id = {item.candidate_id: item for item in state.request.candidates}
         for plan in self.poc_plans:
+            if (
+                not plan.trusted
+                or plan.recipe_id not in self.recipe_registry.trusted_recipe_ids
+            ):
+                result = PocResult(
+                    poc_result_id=(
+                        f"poc-result:{_slug(plan.candidate_id)}:research-only"
+                    ),
+                    poc_plan_id=plan.poc_plan_id,
+                    candidate_id=plan.candidate_id,
+                    status=PocStatus.RESEARCH_ONLY,
+                    timed_out=False,
+                    duration_ms=0,
+                    failure_code=FailureCode.POC_RECIPE_UNSUPPORTED,
+                )
+                results.append(result)
+                self.poc_history.append(result)
+                self.trace_sink(
+                    "tool",
+                    "verify",
+                    "denied",
+                    (
+                        f"recipe_id={plan.recipe_id or 'none'} "
+                        "reason=unreviewed_recipe runner_invoked=false"
+                    ),
+                )
+                continue
             # A full recipe can block for two independently bounded Docker stages.
             self._require_remaining_seconds(90)
             result = self._poc_service.execute(

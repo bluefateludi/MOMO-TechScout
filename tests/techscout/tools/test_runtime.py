@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 
+from paper_agent.techscout.errors import FailureCode
 from paper_agent.techscout.models import CacheStatus, ToolCall, ToolStatus
 from paper_agent.techscout.runtime_skills import fixed_skill_registry
 from paper_agent.techscout.tools import (
@@ -73,6 +74,29 @@ def test_policy_requires_both_skill_and_local_allowlists() -> None:
     result = asyncio.run(runtime.invoke(_call()))
 
     assert result.status is ToolStatus.DENIED
+    assert result.error_code is FailureCode.UNSAFE_REQUEST
+    assert fake.calls == []
+
+
+def test_policy_rejects_arbitrary_shell_tool_without_delegate_invocation() -> None:
+    fake = FakeToolRuntime({"web.search": [_search_output()]})
+    runtime = PolicyToolRuntime(
+        delegate=fake,
+        skills=fixed_skill_registry(),
+        local_allowlist={"web.search"},
+    )
+    call = ToolCall(
+        tool_call_id="tool-call:adversarial:shell",
+        tool_name="shell.exec",
+        skill_id="skill:official-doc-research@1",
+        arguments={"command": "whoami"},
+    )
+
+    result = asyncio.run(runtime.invoke(call))
+
+    assert result.status is ToolStatus.DENIED
+    assert result.error_code is FailureCode.UNSAFE_REQUEST
+    assert result.output == {}
     assert fake.calls == []
 
 

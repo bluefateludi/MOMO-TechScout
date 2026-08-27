@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
+from pydantic import ValidationError
 
 from paper_agent.config import Settings
 from paper_agent.evidence.hybrid import HybridEvidenceRetriever
@@ -435,6 +437,43 @@ def test_model_cannot_promote_research_only_candidate(tmp_path: Path) -> None:
     assert not report["summary"].startswith("Model-ranked")
 
 
+@pytest.mark.parametrize(
+    "authority_field",
+    ("recipe_id", "command", "shell", "network", "filesystem", "resources", "tool_calls"),
+)
+def test_model_decision_schema_rejects_attempted_authority_escalation(
+    authority_field: str,
+) -> None:
+    payload = {
+        "preferred_candidate_id": "candidate:chroma",
+        "summary": "Attempt to smuggle execution authority through model output.",
+        authority_field: "attacker-controlled",
+    }
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ModelDecisionDraft.model_validate(payload)
+
+
+def test_unreviewed_recipe_is_denied_before_poc_seam_and_cannot_publish_verified(
+    tmp_path: Path,
+) -> None:
+    poc = _Poc()
+    detail, report, _, trace = _run(
+        tmp_path,
+        _factory(poc=poc),
+        _body([{"name": "pgvector"}]),
+    )
+
+    assert poc.execute_calls == []
+    assert detail["status"] == "completed_with_limitations"
+    assert report["verdict"] == "no_safe_winner"
+    assert report["recommendation"] is None
+    assert report["poc_results"][0]["status"] == "research_only"
+    denial = next(item for item in trace if "reason=unreviewed_recipe" in item["label"])
+    assert denial["status"] == "denied"
+    assert "runner_invoked=false" in denial["label"]
+
+
 def test_verified_budget_is_300_seconds_and_fast_budget_stays_120(tmp_path: Path) -> None:
     verified = TechScoutRunEngine._initial_state(
         "run:00000000-0000-4000-8000-000000000701",
@@ -502,7 +541,7 @@ def test_non_hero_environment_never_runs_reviewed_recipe(tmp_path: Path) -> None
     detail, report, _, _ = _run(tmp_path, _factory(poc=poc), body)
     assert detail["status"] == "completed_with_limitations"
     assert report["poc_results"][0]["status"] == "research_only"
-    assert poc.execute_calls == ["candidate:chroma"]
+    assert poc.execute_calls == []
 
 
 def test_one_recovery_transition_reruns_only_one_failed_candidate(tmp_path: Path) -> None:
