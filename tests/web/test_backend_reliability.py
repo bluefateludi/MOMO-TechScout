@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,10 @@ from paper_agent.web.errors import ConflictError, ErrorKind, WebError, classify_
 from paper_agent.web.registry import RunRegistry
 from paper_agent.web.structured_logging import JsonFormatter, RedactingContextFilter
 from paper_agent.web.task_queue import InMemoryRunQueue, QueueFullError, RedisRunQueue
-from paper_agent.web.techscout_execution import TechScoutSingleRunExecutor
+from paper_agent.web.techscout_execution import (
+    TechScoutRunEngine,
+    TechScoutSingleRunExecutor,
+)
 from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.worker import TechScoutWorker, WorkResult
 from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
@@ -85,6 +89,178 @@ def test_registry_claim_cancel_and_terminal_transitions_are_atomic(tmp_path):
     assert terminal.status == "cancelled"
     with pytest.raises(ConflictError):
         registry.requeue_techscout(run_id)
+
+
+def test_terminal_replay_is_idempotent_and_competing_write_is_audited(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000107"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    owner = registry.claim_techscout(
+        run_id, worker_id="worker-a", lease_token="lease-a",
+    )
+    assert owner is not None
+    kwargs = {
+        "projection_path": "techscout/run/attempts/fence-1/web-projection.json",
+        "progress": owner.progress,
+        "worker_id": owner.worker_id,
+        "lease_token": owner.lease_token,
+        "fencing_token": owner.fencing_token,
+    }
+
+    accepted = registry.terminal_techscout(run_id, "completed", **kwargs)
+    replayed = registry.terminal_techscout(run_id, "completed", **kwargs)
+    assert replayed == accepted
+
+    with pytest.raises(ConflictError):
+        registry.terminal_techscout(
+            run_id, "completed", **{**kwargs, "projection_path": "competing.json"},
+        )
+    events, _ = registry.list_events(run_id, after_sequence=0, limit=100)
+    assert sum(event.status == "completed" for event in events) == 1
+    assert any(event.status == "write_rejected" for event in events)
+
+
+def test_stale_owner_trace_write_is_rejected_and_audited(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000108"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    old = registry.claim_techscout(
+        run_id, worker_id="worker-old", lease_token="lease-old",
+    )
+    assert old is not None
+    registry.record_techscout_failure(
+        run_id, kind=ErrorKind.TRANSIENT, code="retry", retryable=True,
+        worker_id=old.worker_id, lease_token=old.lease_token,
+        fencing_token=old.fencing_token,
+    )
+    current = registry.claim_techscout(
+        run_id, worker_id="worker-new", lease_token="lease-new",
+    )
+    assert current is not None
+
+    with pytest.raises(ConflictError):
+        registry.append_event(
+            run_id, event_type="stage", stage="research", status="running",
+            label="stale stage result", worker_id=old.worker_id,
+            lease_token=old.lease_token, fencing_token=old.fencing_token,
+        )
+    events, _ = registry.list_events(run_id, after_sequence=0, limit=100)
+    assert not any(event.label == "stale stage result" for event in events)
+    assert events[-1].status == "write_rejected"
+
+
+def test_terminal_race_accepts_exactly_one_authority(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000109"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    owner = registry.claim_techscout(
+        run_id, worker_id="worker-a", lease_token="lease-a",
+    )
+    assert owner is not None
+    barrier = threading.Barrier(2)
+    accepted: list[str] = []
+    rejected: list[str] = []
+
+    def terminalize(projection_path):
+        barrier.wait()
+        try:
+            result = registry.terminal_techscout(
+                run_id, "completed", projection_path=projection_path,
+                progress=owner.progress, worker_id=owner.worker_id,
+                lease_token=owner.lease_token, fencing_token=owner.fencing_token,
+            )
+            accepted.append(result.projection_path or "")
+        except ConflictError:
+            rejected.append(projection_path)
+
+    threads = [
+        threading.Thread(target=terminalize, args=(f"authority-{index}.json",))
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert len(accepted) == 1
+    assert len(rejected) == 1
+    assert registry.get_techscout(run_id).projection_path == accepted[0]
+    events, _ = registry.list_events(run_id, after_sequence=0, limit=100)
+    assert sum(event.status == "completed" for event in events) == 1
+    assert sum(event.status == "write_rejected" for event in events) == 1
+
+
+def test_fenced_execution_directories_resume_latest_checkpoint_without_overwrite(
+    tmp_path,
+):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000110"
+    registry.admit_techscout_idempotent(
+        run_id, REQUEST, capacity=4, max_attempts=3,
+    )
+    old = registry.claim_techscout(
+        run_id, worker_id="worker-old", lease_token="lease-old",
+    )
+    assert old is not None
+    engine = TechScoutRunEngine(tmp_path / "outputs", registry)
+    old_dir = engine._execution_dir(old)
+    old_dir.mkdir(parents=True)
+    (old_dir / "stage-workspace.json").write_text(
+        '{"generation":"old"}', encoding="utf-8",
+    )
+    with sqlite3.connect(old_dir / "harness-checkpoints.sqlite3") as db:
+        db.execute("CREATE TABLE authority (generation TEXT NOT NULL)")
+        db.execute("INSERT INTO authority VALUES ('old')")
+    (old_dir / "run_manifest.json").write_text("old", encoding="utf-8")
+
+    registry.record_techscout_failure(
+        run_id, kind=ErrorKind.TRANSIENT, code="lease_lost", retryable=True,
+        worker_id=old.worker_id, lease_token=old.lease_token,
+        fencing_token=old.fencing_token,
+    )
+    current = registry.claim_techscout(
+        run_id, worker_id="worker-new", lease_token="lease-new",
+    )
+    assert current is not None
+    current_dir = engine._execution_dir(current)
+    engine._prepare_execution_dir(current, current_dir)
+    assert current_dir != old_dir
+    assert (current_dir / "stage-workspace.json").read_text(
+        encoding="utf-8",
+    ) == '{"generation":"old"}'
+    with sqlite3.connect(current_dir / "harness-checkpoints.sqlite3") as db:
+        assert db.execute("SELECT generation FROM authority").fetchone()[0] == "old"
+
+    (current_dir / "run_manifest.json").write_text("new", encoding="utf-8")
+    (current_dir / "traces.jsonl").write_text("new-trace", encoding="utf-8")
+    (current_dir / "stage-workspace.json").write_text(
+        '{"generation":"new"}', encoding="utf-8",
+    )
+    (old_dir / "run_manifest.json").write_text("stale", encoding="utf-8")
+    (old_dir / "traces.jsonl").write_text("stale-trace", encoding="utf-8")
+    (old_dir / "stage-workspace.json").write_text(
+        '{"generation":"stale"}', encoding="utf-8",
+    )
+    assert (current_dir / "run_manifest.json").read_text(encoding="utf-8") == "new"
+    assert (current_dir / "traces.jsonl").read_text(encoding="utf-8") == "new-trace"
+    assert (current_dir / "stage-workspace.json").read_text(
+        encoding="utf-8",
+    ) == '{"generation":"new"}'
+
+    registry.record_techscout_failure(
+        run_id, kind=ErrorKind.TRANSIENT, code="lease_lost", retryable=True,
+        worker_id=current.worker_id, lease_token=current.lease_token,
+        fencing_token=current.fencing_token,
+    )
+    newest = registry.claim_techscout(
+        run_id, worker_id="worker-newest", lease_token="lease-newest",
+    )
+    assert newest is not None
+    newest_dir = engine._execution_dir(newest)
+    engine._prepare_execution_dir(newest, newest_dir)
+    assert (newest_dir / "stage-workspace.json").read_text(
+        encoding="utf-8",
+    ) == '{"generation":"new"}'
 
 
 def test_queued_run_expiring_before_claim_projects_timed_out(tmp_path, monkeypatch):
@@ -496,6 +672,36 @@ def test_duplicate_delivery_for_running_owner_is_acked_without_retry_loop(tmp_pa
     assert duplicate.process_once() is True
     assert duplicate.process_once() is False
     assert registry.get_techscout(run_id).worker_id == "worker-a"
+
+
+def test_duplicate_delivery_after_terminal_does_not_execute_or_publish_again(tmp_path):
+    registry = RunRegistry(tmp_path / "registry.sqlite3")
+    queue = InMemoryRunQueue(capacity=2)
+    run_id = "00000000-0000-4000-8000-000000000311"
+    registry.admit_techscout(run_id, REQUEST, 4)
+    queue.enqueue(run_id)
+    calls = 0
+
+    def processor(row):
+        nonlocal calls
+        calls += 1
+        return WorkResult(
+            status="completed", projection_path="authority.json",
+            progress=row.progress,
+        )
+
+    worker = TechScoutWorker(registry, queue, processor, worker_id="worker-a")
+    assert worker.process_once() is True
+    accepted = registry.get_techscout(run_id)
+    assert accepted.status == "completed"
+    assert calls == 1
+
+    assert queue.enqueue(run_id) is True
+    assert worker.process_once() is True
+    assert calls == 1
+    assert registry.get_techscout(run_id).projection_path == accepted.projection_path
+    events, _ = registry.list_events(run_id, after_sequence=0, limit=100)
+    assert sum(event.status == "completed" for event in events) == 1
 
 
 class _PingClient:

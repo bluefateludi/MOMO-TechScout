@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -1224,8 +1225,8 @@ class TechScoutRunEngine:
         self.verified_timeout_seconds = verified_timeout_seconds
 
     def run(self, row: TechScoutRegistryRun) -> tuple[TechScoutProjectionBundle, str]:
-        run_dir = self.output_root / "techscout" / row.id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = self._execution_dir(row)
+        self._prepare_execution_dir(row, run_dir)
         core_id = f"run:{row.id}"
         scenario = self._scenario(row.request)
         started = time.monotonic()
@@ -1259,6 +1260,8 @@ class TechScoutRunEngine:
             "progress_sink": progress,
             "trace_sink": lambda event_type, stage, status, label: self.registry.append_event(
                 row.id, event_type=event_type, stage=stage, status=status, label=label,
+                worker_id=row.worker_id, lease_token=row.lease_token,
+                fencing_token=row.fencing_token,
             ),
             "trace": trace,
         }
@@ -1311,8 +1314,8 @@ class TechScoutRunEngine:
     def publish_failed_projection(
         self, row: TechScoutRegistryRun, code: str = "execution_initialization_failed",
     ) -> tuple[TechScoutProjectionBundle, str]:
-        run_dir = self.output_root / "techscout" / row.id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = self._execution_dir(row)
+        self._prepare_execution_dir(row, run_dir)
         progress = TechScoutProgress(
             stage="terminal", completed_stages=[], elapsed_seconds=0,
         )
@@ -1379,6 +1382,58 @@ class TechScoutRunEngine:
         )
         trace.seal()
         return bundle, str(path.relative_to(self.output_root))
+
+    def _execution_dir(self, row: TechScoutRegistryRun) -> Path:
+        logical_run_dir = self.output_root / "techscout" / row.id
+        if row.fencing_token <= 1:
+            return logical_run_dir
+        return logical_run_dir / "attempts" / f"fence-{row.fencing_token:08d}"
+
+    def _prepare_execution_dir(
+        self, row: TechScoutRegistryRun, execution_dir: Path,
+    ) -> None:
+        execution_dir.mkdir(parents=True, exist_ok=True)
+        if row.fencing_token <= 1 or (execution_dir / "stage-workspace.json").is_file():
+            return
+        logical_run_dir = self.output_root / "techscout" / row.id
+        candidates: list[Path] = []
+        attempts_dir = logical_run_dir / "attempts"
+        if attempts_dir.is_dir():
+            candidates.extend(sorted(
+                (
+                    path for path in attempts_dir.glob("fence-*")
+                    if (
+                        path.is_dir()
+                        and path != execution_dir
+                        and path.name.removeprefix("fence-").isdigit()
+                        and int(path.name.removeprefix("fence-")) < row.fencing_token
+                    )
+                ),
+                reverse=True,
+            ))
+        candidates.append(logical_run_dir)
+        source = next(
+            (path for path in candidates if (path / "stage-workspace.json").is_file()),
+            None,
+        )
+        if source is None:
+            return
+        for name in ("stage-workspace.json", "stage-workspace.backup"):
+            candidate = source / name
+            if candidate.is_file():
+                shutil.copyfile(candidate, execution_dir / name)
+        checkpoint = source / "harness-checkpoints.sqlite3"
+        if checkpoint.is_file():
+            with (
+                sqlite3.connect(checkpoint) as source_db,
+                sqlite3.connect(execution_dir / checkpoint.name) as destination_db,
+            ):
+                source_db.backup(destination_db)
+        poc_artifacts = source / "poc-artifacts"
+        if poc_artifacts.is_dir():
+            shutil.copytree(
+                poc_artifacts, execution_dir / "poc-artifacts", dirs_exist_ok=True,
+            )
 
     @staticmethod
     def _scenario(request: TechScoutCreateRunRequest) -> str:
