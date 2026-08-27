@@ -62,7 +62,7 @@ _ALLOWED_ATTRIBUTES = {
         "terminal_status", "gate_outcome", "latency_ms", "prompt_tokens",
         "completion_tokens", "total_tokens", "retry_count", "recovery_count",
         "report_sha256", "manifest_sha256", "model_revision",
-        "provider_usage_reported",
+        "provider_usage_reported", "error_kind", "error_code",
     },
 }
 _REQUIRED_ATTRIBUTES = {

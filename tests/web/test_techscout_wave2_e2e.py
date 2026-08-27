@@ -13,6 +13,8 @@ from paper_agent.techscout.harness import SQLiteCheckpointAdapter, TechScoutHarn
 from paper_agent.techscout.state import ResearchStage
 from paper_agent.techscout.validation import REQUIRED_TERMINAL_ARTIFACTS
 from paper_agent.web.registry import RunRegistry
+from paper_agent.web.errors import ErrorKind, WebError
+from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
 from paper_agent.web.techscout_execution import (
     DeterministicStageServices,
@@ -321,6 +323,93 @@ def test_executor_exception_always_publishes_failed_terminal_projection(
     assert trace_lines[-2]["attributes"]["terminal_status"] == "failed"
     assert trace_lines[-1]["record_type"] == "trace_seal"
     assert verify_sealed_jsonl(run_dir / "traces.jsonl")["sealed"] is True
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "attempts", "expected_code", "expected_kind"),
+    [
+        (
+            lambda: TimeoutError("secret-canary provider timeout"),
+            2,
+            "retry_exhausted",
+            ErrorKind.TRANSIENT,
+        ),
+        (
+            lambda: RuntimeError("secret-canary unexpected provider body"),
+            1,
+            "unexpected_execution_failure",
+            ErrorKind.PERMANENT,
+        ),
+    ],
+)
+def test_worker_exhaustion_and_unexpected_failure_publish_one_audited_terminal(
+    tmp_path: Path,
+    caplog,
+    error_factory,
+    attempts: int,
+    expected_code: str,
+    expected_kind: ErrorKind,
+) -> None:
+    body, _ = _body("happy-path.json")
+    request = TechScoutCreateRunRequest.model_validate(body)
+    registry = RunRegistry(tmp_path / "state" / "run-registry.sqlite3")
+    run_id = "00000000-0000-4000-8000-000000000503"
+    registry.admit_techscout(run_id, request, 4)
+    executor = TechScoutSingleRunExecutor(
+        registry,
+        tmp_path / "outputs",
+        embedded_worker=False,
+    )
+    def fail(_row):
+        raise error_factory()
+
+    executor.engine.run = fail  # type: ignore[method-assign]
+    executor.queue.enqueue(run_id)
+
+    for attempt in range(attempts):
+        assert executor.worker.process_once() is True
+        if attempt + 1 < attempts:
+            assert registry.get_techscout(run_id).status == "queued"
+
+    terminal = registry.get_techscout(run_id)
+    assert terminal.status == "failed"
+    assert terminal.error_kind is expected_kind
+    assert terminal.error_code == expected_code
+    assert executor.queue.dead_letters() == [(run_id, expected_code)]
+
+    service = TechScoutProjectionService(
+        registry,
+        executor,
+        tmp_path / "outputs",
+        capacity=4,
+    )
+    detail = service.detail(run_id)
+    assert detail.status == "failed"
+    assert [(issue.stage, issue.code) for issue in detail.issues] == [
+        ("orchestration", expected_code),
+    ]
+    with pytest.raises(WebError) as unavailable:
+        service.report(run_id)
+    assert unavailable.value.code == "report_unavailable"
+
+    run_dir = tmp_path / "outputs" / "techscout" / run_id
+    assert not (run_dir / "decision-report.json").exists()
+    assert not (run_dir / "decision-report.md").exists()
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["terminal_status"] == "failed"
+    assert manifest["limitation_codes"] == [expected_code]
+    trace_lines = [
+        json.loads(line)
+        for line in (run_dir / "traces.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    terminal_trace = trace_lines[-2]
+    assert terminal_trace["attributes"]["terminal_status"] == "failed"
+    assert terminal_trace["attributes"]["error_kind"] == expected_kind.value
+    assert terminal_trace["attributes"]["error_code"] == expected_code
+    assert terminal_trace["attributes"]["retry_count"] == attempts - 1
+    assert verify_sealed_jsonl(run_dir / "traces.jsonl")["sealed"] is True
+    assert "secret-canary" not in caplog.text
+    assert "secret-canary" not in json.dumps(detail.model_dump(mode="json"))
 
 
 def test_demo_mcp_environment_does_not_inherit_parent_credentials(monkeypatch) -> None:
