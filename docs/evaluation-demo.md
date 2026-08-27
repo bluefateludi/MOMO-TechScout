@@ -33,7 +33,8 @@ path, so repeated runs from the repository root are directly comparable.
 The synthetic baseline contract is stored in
 `tests/fixtures/evaluation_demo_manifest.json`. It pins:
 
-- SHA-256 hashes for both input fixtures;
+- platform-neutral SHA-256 hashes for both text fixtures after normalizing line
+  endings to LF;
 - the baseline name and `K=3`;
 - the claim/citation and retrieval case counts;
 - exact macro summaries with a declared floating-point tolerance.

@@ -5,11 +5,11 @@
   "inputs": {
     "evaluation_fixture": {
       "path": "tests/fixtures/eval_cases.json",
-      "sha256": "5ef4d0935ba58bbb9c4754cd5daf6ffc701f27115b540a8a983748f8920a8db5"
+      "sha256": "b856dc803b00efd24fb3a23cca9af79073324786cda7aa2da03ddbb669569bba"
     },
     "retrieval_fixture": {
       "path": "tests/fixtures/retrieval_eval_cases.json",
-      "sha256": "53eda9e06a748b6335c157bd28f5bafe246dc7e4072aba081852f80e122d6fd5"
+      "sha256": "4bcb124fc8cb51c008cc212b8e8b94d3538a326efe6f1af469d073478e827904"
     }
   },
   "parameters": {
