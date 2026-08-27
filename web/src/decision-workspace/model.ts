@@ -1,8 +1,5 @@
 import type { TechScoutCreateRunRequest } from "../api/contracts";
 
-export type RequirementKind = "must_have" | "preference" | "unknown";
-export type ReviewItemKind = RequirementKind | "research_question" | "poc_check";
-
 export interface DecisionWorkspaceDraft {
   question: string;
   projectSummary: string;
@@ -19,21 +16,6 @@ export interface DecisionWorkspaceDraft {
   unknowns: string[];
   candidates: string[];
   mode: "fast" | "verified";
-}
-
-export interface WorkspaceReviewItem {
-  itemId: string;
-  kind: ReviewItemKind;
-  statement: string;
-  requirementIds: string[];
-  authority: "user" | "planner_fixture";
-}
-
-export interface WorkspaceReview {
-  reviewId: string;
-  items: WorkspaceReviewItem[];
-  generatedAt: string;
-  integration: "fixture_preview";
 }
 
 export interface DraftIssue {

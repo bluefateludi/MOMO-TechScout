@@ -1,19 +1,25 @@
-import type { DecisionContext, TechScoutApi, TechScoutRunSummary } from "../api/contracts";
+import type { DecisionContext, DecisionWorkflow, RequirementsReviewRequest, TechScoutApi } from "../api/contracts";
 import { ApiError } from "../api/client";
-import { buildWorkspaceReviewFixture } from "./fixtures";
-import { initialDecisionDraft, toCreateRunRequest, type DecisionWorkspaceDraft, type WorkspaceReview } from "./model";
+import { initialDecisionDraft, toCreateRunRequest, type DecisionWorkspaceDraft } from "./model";
 
-export interface LoadedDecisionDraft { draft: DecisionWorkspaceDraft; compatibility: "native" | "legacy_projection" }
+export interface LoadedDecisionDraft { draft: DecisionWorkspaceDraft; compatibility: "native" | "legacy_projection"; workflow?: DecisionWorkflow }
 export interface DecisionWorkspaceAdapter {
-  preview(draft: DecisionWorkspaceDraft): Promise<WorkspaceReview>;
-  launch(draft: DecisionWorkspaceDraft): Promise<TechScoutRunSummary>;
+  startReview(draft: DecisionWorkspaceDraft): Promise<DecisionWorkflow>;
+  confirmRequirements(workflow: DecisionWorkflow): Promise<DecisionWorkflow>;
+  confirmCriteria(workflow: DecisionWorkflow): Promise<DecisionWorkflow>;
   load(runId: string): Promise<LoadedDecisionDraft>;
 }
-export interface CriteriaPreviewPort { preview(draft: DecisionWorkspaceDraft): Promise<WorkspaceReview> }
 
-export const fixtureCriteriaPreview: CriteriaPreviewPort = {
-  async preview(draft) { await new Promise((resolve) => setTimeout(resolve, 180)); return buildWorkspaceReviewFixture(draft); },
-};
+function commandId(operation: string, runId: string): string { return `web:${operation}:${runId}`; }
+
+function requirementsFromDraft(draft: DecisionWorkspaceDraft): RequirementsReviewRequest {
+  const inputs = [
+    ...draft.mustHaves.map((statement) => ({ kind: "hard_constraint" as const, statement })),
+    ...draft.preferences.map((statement) => ({ kind: "evaluation_criterion" as const, statement })),
+    ...draft.unknowns.map((statement) => ({ kind: "unknown" as const, statement })),
+  ];
+  return { requirements: inputs.map((item, index) => ({ ...item, requirement_id: `requirement:web-${index + 1}` })) };
+}
 
 function contextToDraft(context: DecisionContext): DecisionWorkspaceDraft {
   return {
@@ -27,12 +33,24 @@ function contextToDraft(context: DecisionContext): DecisionWorkspaceDraft {
   };
 }
 
-export function createDecisionWorkspaceAdapter(api: TechScoutApi, criteria: CriteriaPreviewPort = fixtureCriteriaPreview): DecisionWorkspaceAdapter {
+export function createDecisionWorkspaceAdapter(api: TechScoutApi): DecisionWorkspaceAdapter {
   return {
-    preview: (draft) => criteria.preview(draft),
-    async launch(draft) { return (await api.createRun(toCreateRunRequest(draft))).data; },
+    async startReview(draft) {
+      const run = (await api.createRun(toCreateRunRequest(draft))).data;
+      return (await api.reviewRequirements(run.id, requirementsFromDraft(draft), commandId("requirements-review", run.id))).data;
+    },
+    async confirmRequirements(workflow) {
+      return (await api.confirmRequirements(workflow.run_id, commandId("confirm-requirements", workflow.run_id))).data;
+    },
+    async confirmCriteria(workflow) {
+      if (!workflow.selection_criteria) throw new Error("Selection Criteria are unavailable.");
+      return (await api.confirmCriteria(workflow.run_id, workflow.selection_criteria.contract_id, commandId("confirm-criteria", workflow.run_id))).data;
+    },
     async load(runId) {
-      try { return { draft: contextToDraft((await api.getDecisionContext(runId)).data), compatibility: "native" }; }
+      try {
+        const [context, workflow, run] = await Promise.all([api.getDecisionContext(runId), api.getWorkflow(runId), api.getRun(runId)]);
+        return { draft: { ...contextToDraft(context.data), mode: run.data.mode, candidates: run.data.candidates.map((item) => item.name) }, compatibility: "native", workflow: workflow.data };
+      }
       catch (error) {
         if (!(error instanceof ApiError) || error.status !== 404) throw error;
         const run = (await api.getRun(runId)).data;
