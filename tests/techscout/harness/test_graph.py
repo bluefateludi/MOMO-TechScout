@@ -333,6 +333,36 @@ def test_recovery_repeats_only_the_failed_stage_once(tmp_path) -> None:
     assert services.calls.count(ResearchStage.RESEARCH_CANDIDATES) == 1
 
 
+def test_recovery_checkpoint_records_the_repeated_failed_stage(tmp_path) -> None:
+    services = RecoveringStageServices()
+    checkpoint_path = tmp_path / "recovery-stage.sqlite3"
+
+    with SQLiteCheckpointAdapter(checkpoint_path) as checkpoints:
+        recovered = _harness(services, checkpoints).run(
+            _initial_state(),
+            interrupt_after=ResearchStage.RECOVER_ONCE,
+        )
+
+    assert recovered.recovery is not None
+    assert recovered.state.recovery_count == 1
+    assert recovered.state.stage is ResearchStage.EXECUTE_POC
+    assert recovered.state.checkpoint is not None
+    assert recovered.state.checkpoint.stage is ResearchStage.EXECUTE_POC
+    assert (
+        recovered.state.checkpoint.parent_checkpoint_id
+        == recovered.recovery.checkpoint_id
+    )
+    assert services.calls.count(ResearchStage.RESEARCH_CANDIDATES) == 1
+    assert services.calls.count(ResearchStage.EXECUTE_POC) == 2
+
+    with SQLiteCheckpointAdapter(checkpoint_path) as checkpoints:
+        terminal = _harness(services, checkpoints).run(run_id=recovered.state.run_id)
+
+    assert terminal.state.terminal_status is TerminalStatus.COMPLETED
+    assert services.calls.count(ResearchStage.RESEARCH_CANDIDATES) == 1
+    assert services.calls.count(ResearchStage.EXECUTE_POC) == 2
+
+
 def test_recovery_policy_refuses_retry_without_a_checkpoint() -> None:
     failure = Failure(
         failure_id="failure:harness-poc:no-checkpoint",

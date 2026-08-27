@@ -136,6 +136,10 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _sha_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _slug(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return normalized[:48] or "candidate"
@@ -973,6 +977,7 @@ class VerifiedStageServices:
         by_id = {item.candidate_id: item for item in state.request.candidates}
         plan_by_id = {item.candidate_id: item for item in self.poc_plans}
         recovered: list[PocResult] = []
+        failures = list(state.failures)
         for result in self.poc_results:
             stage = self._failed_poc_stage.get(result.candidate_id)
             if stage is None:
@@ -993,6 +998,11 @@ class VerifiedStageServices:
             )
             merged = result.model_copy(update={
                 "status": complete_status,
+                "resolved_version": (
+                    self.recipe_registry.get(plan_by_id[result.candidate_id].recipe_id).package_version
+                    if complete_status is PocStatus.PASSED
+                    else result.resolved_version
+                ),
                 "exit_code": attempt.exit_code,
                 "timed_out": attempt.timed_out,
                 "duration_ms": result.duration_ms + attempt.duration_ms,
@@ -1005,6 +1015,21 @@ class VerifiedStageServices:
             })
             recovered.append(merged)
             self.poc_history.append(merged)
+            if merged.status in {PocStatus.FAILED, PocStatus.TIMED_OUT}:
+                failures.append(
+                    Failure(
+                        failure_id=(
+                            f"failure:{state.run_id.split(':', 1)[1]}:"
+                            f"{_slug(result.candidate_id)}:recovery"
+                        ),
+                        code=merged.failure_code or FailureCode.POC_NONZERO_EXIT,
+                        stage=FailureStage.POC_EXECUTION,
+                        message="The reviewed Docker PoC stage failed after recovery.",
+                        recoverable=False,
+                        recovery_action=RecoveryAction.PUBLISH_LIMITED_RESULT,
+                        attempt=2,
+                    )
+                )
             checkpoint = state.checkpoint.checkpoint_id if state.checkpoint else "checkpoint:unavailable"
             self.trace_sink(
                 "recovery", "verify", attempt.status.value,
@@ -1014,6 +1039,7 @@ class VerifiedStageServices:
         return StageResult(
             state=state.model_copy(update={
                 "poc_result_ids": tuple(item.poc_result_id for item in recovered),
+                "failures": tuple(failures),
             }),
             tool_calls=1,
         )
@@ -1283,6 +1309,8 @@ class TechScoutRunEngine:
                 result = harness.run(state)
         bundle = self._bundle(row, result, services, scenario, started)
         self._publish(run_dir, result, services, bundle)
+        report_path = run_dir / "decision-report.json"
+        manifest_path = run_dir / "run_manifest.json"
         trace.record_terminal(
             terminal_status=result.state.terminal_status.value if result.state.terminal_status else "failed",
             gate_outcome=result.state.gate_outcome.value if result.state.gate_outcome else "failed",
@@ -1295,8 +1323,8 @@ class TechScoutRunEngine:
             completion_tokens=getattr(services, "model_completion_tokens", None) or 0,
             retry_count=result.state.recovery_count,
             recovery_count=result.state.recovery_count,
-            report_sha256=_sha(result.report.model_dump_json() if result.report else ""),
-            manifest_sha256=_sha(result.manifest.model_dump_json() if result.manifest else ""),
+            report_sha256=_sha_file(report_path),
+            manifest_sha256=_sha_file(manifest_path),
             status="ok" if result.state.terminal_status is not TerminalStatus.FAILED else "error",
             context={
                 "model_revision": getattr(services, "model_revision", None),

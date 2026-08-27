@@ -10,6 +10,7 @@ from paper_agent.techscout.harness.stages import (
 from paper_agent.techscout.models import GateOutcome, SkillSelection, ToolCall, ToolResult, ToolStatus
 from paper_agent.techscout.observability.recorder import TechScoutTraceRecorder
 from paper_agent.techscout.observability.schema import TraceEventName
+from paper_agent.techscout.recovery import RESEARCH_STAGE_BY_FAILURE_STAGE
 from paper_agent.techscout.runtime_skills import SkillRegistry
 from paper_agent.techscout.state import ResearchStage, ResearchState
 from paper_agent.techscout.tools.runtime import ToolRuntime
@@ -95,23 +96,42 @@ class TracingStageServices:
         artifacts: StageArtifacts,
         deadline: StageDeadline,
     ) -> StageResult:
-        is_recovery = state.gate_outcome is GateOutcome.RECOVER and bool(state.failures)
+        failure = state.failures[-1] if state.failures else None
+        is_recovery = (
+            state.gate_outcome is GateOutcome.RECOVER
+            and failure is not None
+            and RESEARCH_STAGE_BY_FAILURE_STAGE.get(failure.stage) is stage
+        )
         if is_recovery:
             if state.checkpoint is None:
                 raise ValueError("recovery trace requires a checkpoint link")
             self._trace.record(
+                TraceEventName.RETRY_SCHEDULED,
+                status="started",
+                attributes={
+                    "failure_id": failure.failure_id,
+                    "stage": stage.value,
+                    "attempt": failure.attempt + 1,
+                },
+            )
+            self._trace.record(
                 TraceEventName.RECOVERY_STARTED,
                 status="started",
                 attributes={
-                    "failure_id": state.failures[-1].failure_id,
+                    "failure_id": failure.failure_id,
                     "checkpoint_id": state.checkpoint.checkpoint_id,
                     "stage": stage.value,
-                    "recovery_action": state.failures[-1].recovery_action.value
-                    if state.failures[-1].recovery_action
+                    "recovery_action": failure.recovery_action.value
+                    if failure.recovery_action
                     else "fail_safely",
                 },
             )
-        result = self._delegate.execute(stage, state, artifacts, deadline)
+        try:
+            result = self._delegate.execute(stage, state, artifacts, deadline)
+        except Exception:
+            if is_recovery:
+                self._record_recovery_finished(stage, state, succeeded=False)
+            raise
         self._trace.record(
             TraceEventName.STATE_TRANSITIONED,
             status="ok",
@@ -162,15 +182,28 @@ class TracingStageServices:
                 },
             )
         if is_recovery:
-            assert state.checkpoint is not None
-            self._trace.record(
-                TraceEventName.RECOVERY_FINISHED,
-                status="ok" if result.state.recovery_count == 1 else "error",
-                attributes={
-                    "failure_id": state.failures[-1].failure_id,
-                    "checkpoint_id": state.checkpoint.checkpoint_id,
-                    "stage": stage.value,
-                    "succeeded": result.state.recovery_count == 1,
-                },
+            self._record_recovery_finished(
+                stage,
+                state,
+                succeeded=len(result.state.failures) == len(state.failures),
             )
         return result
+
+    def _record_recovery_finished(
+        self,
+        stage: ResearchStage,
+        state: ResearchState,
+        *,
+        succeeded: bool,
+    ) -> None:
+        assert state.checkpoint is not None
+        self._trace.record(
+            TraceEventName.RECOVERY_FINISHED,
+            status="ok" if succeeded else "error",
+            attributes={
+                "failure_id": state.failures[-1].failure_id,
+                "checkpoint_id": state.checkpoint.checkpoint_id,
+                "stage": stage.value,
+                "succeeded": succeeded,
+            },
+        )
