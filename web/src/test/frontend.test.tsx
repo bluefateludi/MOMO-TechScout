@@ -26,23 +26,26 @@ beforeEach(() => {
 describe("TechScout task input", () => {
   it("switches language accessibly and persists the choice", async () => {
     const view = render(<I18nProvider><MemoryRouter><Routes><Route element={<Layout/>}><Route path="/" element={<HomePage/>}/></Route></Routes></MemoryRouter></I18nProvider>);
-    await userEvent.click(screen.getByRole("button", { name: "中文" }));
     expect(screen.getByRole("textbox", { name: "决策问题" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "中文" })).toHaveAttribute("aria-pressed", "true");
-    expect(localStorage.getItem("momo-techscout-locale:v1")).toBe("zh-CN");
+    expect(screen.getByRole("button", { name: "简体中文" })).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement.lang).toBe("zh-CN");
+    await userEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(screen.getByRole("textbox", { name: "Decision question" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "English" })).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("momo-techscout-locale:v1")).toBe("en");
     view.unmount();
     render(<I18nProvider><MemoryRouter><HomePage/></MemoryRouter></I18nProvider>);
-    expect(screen.getByRole("textbox", { name: "决策问题" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Decision question" })).toBeInTheDocument();
   });
   it("captures environment, hard constraints, candidates, and mode", async () => {
     render(<MemoryRouter><HomePage/></MemoryRouter>);
     expect(screen.getByRole("link", { name: /open frozen example/i })).toHaveAttribute("href", `/runs/${TECHSCOUT_FIXTURE_ID}`);
     expect(screen.getByText(/planner may propose questions/i)).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /python version/i })).toHaveValue("3.11");
-    expect(screen.getByRole("textbox", { name: /must-haves/i })).toHaveValue("local persistence\nmetadata equality filtering");
+    expect(screen.getByRole("textbox", { name: /^must-have$/i })).toHaveValue("local persistence\nmetadata equality filtering");
     expect(screen.getByRole("textbox", { name: /candidate shortlist/i })).toHaveValue("Chroma\nQdrant Local\npgvector");
-    expect(screen.getByRole("radio", { name: /fast \/ frozen evidence/i })).toBeChecked();
-    expect(await screen.findByText(/Context ledger/i)).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /fast demo/i })).toBeChecked();
+    expect(await screen.findByText(/Decision records/i)).toBeInTheDocument();
   });
 
   it("navigates after the synthetic mock accepts a task", async () => {
