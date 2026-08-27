@@ -17,6 +17,7 @@ from paper_agent.web.task_queue import InMemoryRunQueue, QueueFullError, RedisRu
 from paper_agent.web.techscout_execution import TechScoutSingleRunExecutor
 from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.worker import TechScoutWorker, WorkResult
+from paper_agent.web.techscout_service import TechScoutProjectionService
 from paper_agent.web.techscout_api_models import TechScoutCreateRunRequest
 
 
@@ -154,6 +155,7 @@ def test_exception_classification_is_bounded_and_safe():
     assert classify_exception(ValueError("bad schema"), attempt=1).kind is ErrorKind.PERMANENT
     exhausted = classify_exception(ConnectionError("offline"), attempt=2, max_attempts=2)
     assert exhausted.kind is ErrorKind.TRANSIENT
+    assert exhausted.code == "retry_exhausted"
     assert "offline" not in exhausted.safe_details
 
 
@@ -179,6 +181,17 @@ def test_registry_deadline_expires_before_claim_with_typed_terminal_error(
     assert expired.progress.stage == "terminal"
     assert expired.error_kind is ErrorKind.DEADLINE
     assert expired.error_code == "deadline_exceeded"
+    service = TechScoutProjectionService(
+        registry,
+        None,  # type: ignore[arg-type]
+        tmp_path,
+        capacity=4,
+    )
+    detail = service.detail(run_id)
+    assert detail.status == "failed"
+    assert [(issue.stage, issue.code) for issue in detail.issues] == [
+        ("orchestration", "deadline_exceeded"),
+    ]
 
 
 def test_worker_retries_transient_failure_once_then_completes(tmp_path):
@@ -226,8 +239,8 @@ def test_worker_dead_letters_permanent_failure_without_leaking_message(tmp_path)
     failed = registry.get_techscout(run_id)
     assert failed.status == "dead_letter"
     assert failed.error_kind is ErrorKind.PERMANENT
-    assert failed.error_code == "execution_failed"
-    assert queue.dead_letters() == [(run_id, "execution_failed")]
+    assert failed.error_code == "unexpected_execution_failure"
+    assert queue.dead_letters() == [(run_id, "unexpected_execution_failure")]
 
 
 def test_stale_worker_cannot_terminalize_after_new_fenced_claim(tmp_path):

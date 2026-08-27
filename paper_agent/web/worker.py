@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from paper_agent.web.context import execution_context
-from paper_agent.web.errors import ConflictError, ErrorKind, classify_exception
+from paper_agent.web.errors import (
+    ClassifiedError,
+    ConflictError,
+    ErrorKind,
+    classify_exception,
+)
 from paper_agent.web.registry import RunRegistry, TechScoutRegistryRun
 from paper_agent.web.task_queue import Lease, RunQueue
 from paper_agent.web.techscout_api_models import TechScoutProgress, TechScoutStatus
@@ -21,6 +26,7 @@ class WorkResult:
 
 
 Processor = Callable[[TechScoutRegistryRun], WorkResult]
+TerminalFailureProcessor = Callable[[TechScoutRegistryRun, ClassifiedError], WorkResult]
 
 
 class TechScoutWorker:
@@ -35,6 +41,7 @@ class TechScoutWorker:
         worker_id: str,
         lease_seconds: int = 30,
         heartbeat_seconds: int = 10,
+        terminal_failure_processor: TerminalFailureProcessor | None = None,
     ) -> None:
         if heartbeat_seconds >= lease_seconds:
             raise ValueError("heartbeat must be shorter than the lease")
@@ -44,6 +51,7 @@ class TechScoutWorker:
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
+        self.terminal_failure_processor = terminal_failure_processor
         self.logger = logging.getLogger("paper_agent.web.worker")
         self._active_lock = threading.Lock()
         self._active: tuple[Lease, TechScoutRegistryRun] | None = None
@@ -104,6 +112,45 @@ class TechScoutWorker:
                 classified = classify_exception(
                     error, attempt=row.attempt_count, max_attempts=row.max_attempts,
                 )
+                if not classified.retryable and self.terminal_failure_processor is not None:
+                    try:
+                        result = self.terminal_failure_processor(row, classified)
+                    except Exception:
+                        classified = ClassifiedError(
+                            kind=ErrorKind.PERMANENT,
+                            code="artifact_publish_failed",
+                            retryable=False,
+                            safe_details={},
+                        )
+                    else:
+                        terminal = self.registry.terminal_techscout(
+                            row.id, "failed",
+                            projection_path=result.projection_path,
+                            progress=result.progress,
+                            error_kind=classified.kind,
+                            error_code=classified.code,
+                            worker_id=row.worker_id,
+                            lease_token=row.lease_token,
+                            fencing_token=row.fencing_token,
+                        )
+                        self.logger.error(
+                            "TechScout execution reached an audited failed terminal",
+                            extra={
+                                "run_id": row.id,
+                                "code": terminal.error_code,
+                                "error_kind": (
+                                    terminal.error_kind.value
+                                    if terminal.error_kind is not None
+                                    else None
+                                ),
+                                "attempt": row.attempt_count,
+                            },
+                        )
+                        if terminal.status == "failed":
+                            self.queue.dead_letter(lease, reason=classified.code)
+                        else:
+                            self.queue.ack(lease)
+                        return True
                 failed = self.registry.record_techscout_failure(
                     row.id, kind=classified.kind, code=classified.code,
                     retryable=classified.retryable,

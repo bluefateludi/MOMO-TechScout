@@ -513,6 +513,14 @@ def test_one_recovery_transition_reruns_only_one_failed_candidate(tmp_path: Path
     assert detail["status"] == "failed"
     assert "docker_unavailable" not in str(detail)
     assert "limitations" not in report
+    artifact_root = tmp_path / "outputs" / "techscout" / detail["id"]
+    assert not (artifact_root / "decision-report.json").exists()
+    assert not (artifact_root / "decision-report.md").exists()
+    manifest = json.loads(
+        (artifact_root / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["terminal_status"] == "failed"
+    assert manifest["limitation_codes"]
 
 
 def test_cache_degradation_does_not_mask_exhausted_poc_failure(tmp_path: Path) -> None:

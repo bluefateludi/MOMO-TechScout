@@ -80,7 +80,7 @@ from paper_agent.techscout.tools.contracts import SearchOutput, SmokeTestOutput
 from paper_agent.techscout.tools.runtime import PolicyToolRuntime, StdioMcpRuntime
 from paper_agent.techscout.validation import REQUIRED_TERMINAL_ARTIFACTS, ValidationGate, ValidationInput
 from paper_agent.web.registry import RunRegistry, TechScoutRegistryRun, utc_now
-from paper_agent.web.errors import ErrorKind, WebError
+from paper_agent.web.errors import ClassifiedError, ErrorKind, WebError
 from paper_agent.web.task_queue import InMemoryRunQueue, RunQueue
 from paper_agent.web.worker import Processor, TechScoutWorker, WorkResult
 from paper_agent.web.techscout_api_models import (
@@ -1282,7 +1282,7 @@ class TechScoutRunEngine:
             else:
                 result = harness.run(state)
         bundle = self._bundle(row, result, services, scenario, started)
-        self._publish(run_dir, result, services, bundle)
+        terminal_manifest = self._publish(run_dir, result, services, bundle)
         trace.record_terminal(
             terminal_status=result.state.terminal_status.value if result.state.terminal_status else "failed",
             gate_outcome=result.state.gate_outcome.value if result.state.gate_outcome else "failed",
@@ -1296,7 +1296,7 @@ class TechScoutRunEngine:
             retry_count=result.state.recovery_count,
             recovery_count=result.state.recovery_count,
             report_sha256=_sha(result.report.model_dump_json() if result.report else ""),
-            manifest_sha256=_sha(result.manifest.model_dump_json() if result.manifest else ""),
+            manifest_sha256=_sha(terminal_manifest.model_dump_json()),
             status="ok" if result.state.terminal_status is not TerminalStatus.FAILED else "error",
             context={
                 "model_revision": getattr(services, "model_revision", None),
@@ -1309,7 +1309,12 @@ class TechScoutRunEngine:
         return bundle, str((run_dir / "web-projection.json").relative_to(self.output_root))
 
     def publish_failed_projection(
-        self, row: TechScoutRegistryRun, code: str = "execution_initialization_failed",
+        self,
+        row: TechScoutRegistryRun,
+        code: str = "execution_initialization_failed",
+        *,
+        error_kind: ErrorKind = ErrorKind.PERMANENT,
+        retry_count: int = 0,
     ) -> tuple[TechScoutProjectionBundle, str]:
         run_dir = self.output_root / "techscout" / row.id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1351,7 +1356,7 @@ class TechScoutRunEngine:
             run_id=f"run:{row.id}",
             terminal_status=TerminalStatus.FAILED,
             artifact_ids=(),
-            limitation_codes=(),
+            limitation_codes=(code,),
         )
         failed_files = {
             "request.json": row.request.model_dump_json(indent=2),
@@ -1373,9 +1378,11 @@ class TechScoutRunEngine:
         trace = TechScoutTraceRecorder(trace_path, run_id=f"run:{row.id}")
         trace.record_terminal(
             terminal_status="failed", gate_outcome="failed", latency_ms=0,
-            prompt_tokens=0, completion_tokens=0, retry_count=0, recovery_count=0,
+            prompt_tokens=0, completion_tokens=0, retry_count=retry_count,
+            recovery_count=0,
             report_sha256=_sha(""), manifest_sha256=_sha(failed_manifest.model_dump_json()),
             status="error",
+            context={"error_kind": error_kind.value, "error_code": code},
         )
         trace.seal()
         return bundle, str(path.relative_to(self.output_root))
@@ -1600,8 +1607,16 @@ class TechScoutRunEngine:
             )
         return TechScoutProjectionBundle(detail=detail, report=report_projection, evidence=evidence)
 
-    def _publish(self, run_dir, result, services, bundle) -> None:
+    def _publish(self, run_dir, result, services, bundle) -> RunManifest:
         request = result.state.request
+        manifest = result.manifest or RunManifest(
+            run_id=request.run_id,
+            terminal_status=TerminalStatus.FAILED,
+            artifact_ids=(),
+            limitation_codes=tuple(
+                dict.fromkeys(failure.code.value for failure in result.state.failures)
+            ),
+        )
         files = {
             "request.json": request.model_dump_json(indent=2),
             "research-plan.json": result.state.plan.model_dump_json(indent=2) if result.state.plan else "{}",
@@ -1609,13 +1624,17 @@ class TechScoutRunEngine:
             "evidence.jsonl": "\n".join(item.model_dump_json() for item in services.evidence) + "\n",
             "poc-plan.json": json.dumps([item.model_dump(mode="json") for item in services.poc_plans], indent=2),
             "poc-results.json": json.dumps([item.model_dump(mode="json") for item in services.poc_history], indent=2),
-            "decision-report.json": result.report.model_dump_json(indent=2) if result.report else "{}",
-            "decision-report.md": f"# TechScout decision\n\n{result.report.summary if result.report else 'Run failed safely.'}\n",
-            "run_manifest.json": result.manifest.model_dump_json(indent=2) if result.manifest else "{}",
+            "run_manifest.json": manifest.model_dump_json(indent=2),
             "web-projection.json": bundle.model_dump_json(indent=2),
         }
+        if result.report is not None:
+            files.update({
+                "decision-report.json": result.report.model_dump_json(indent=2),
+                "decision-report.md": f"# TechScout decision\n\n{result.report.summary}\n",
+            })
         for name, content in files.items():
             (run_dir / name).write_text(content, encoding="utf-8")
+        return manifest
 
 class TechScoutSingleRunExecutor:
     def __init__(
@@ -1648,7 +1667,11 @@ class TechScoutSingleRunExecutor:
         self.queue = queue or InMemoryRunQueue(capacity=queue_capacity)
         self.worker_id = worker_id or f"local-{uuid.uuid4().hex[:12]}"
         self.worker = TechScoutWorker(
-            registry, self.queue, processor or self._process, worker_id=self.worker_id,
+            registry,
+            self.queue,
+            processor or self._process,
+            worker_id=self.worker_id,
+            terminal_failure_processor=self._publish_terminal_failure,
         )
         self.embedded_worker = embedded_worker
         self.shutdown_grace_seconds = shutdown_grace_seconds
@@ -1852,6 +1875,23 @@ class TechScoutSingleRunExecutor:
             progress=bundle.detail.progress,
         )
 
+    def _publish_terminal_failure(
+        self,
+        row: TechScoutRegistryRun,
+        classified: ClassifiedError,
+    ) -> WorkResult:
+        bundle, projection_path = self.engine.publish_failed_projection(
+            row,
+            classified.code,
+            error_kind=classified.kind,
+            retry_count=max(0, row.attempt_count - 1),
+        )
+        return WorkResult(
+            status="failed",
+            projection_path=projection_path,
+            progress=bundle.detail.progress,
+        )
+
     def _execute(self, row: TechScoutRegistryRun) -> None:
         try:
             bundle, projection_path = self.engine.run(row)
@@ -1872,6 +1912,8 @@ class TechScoutSingleRunExecutor:
             self.registry.terminal_techscout(
                 row.id, "failed", projection_path=projection_path,
                 progress=bundle.detail.progress,
+                error_kind=ErrorKind.PERMANENT,
+                error_code="execution_initialization_failed",
                 worker_id=row.worker_id, lease_token=row.lease_token,
                 fencing_token=row.fencing_token,
             )
