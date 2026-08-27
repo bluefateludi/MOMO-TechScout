@@ -7,7 +7,7 @@ The words Fast, Live, and Offline describe evidence/execution authority, not jus
 | User-facing path | Request/API value | Evidence and execution | Current outcome |
 |---|---|---|---|
 | Fast Demo | `fast` | Frozen synthetic source records and deterministic synthetic PoC responses pass through the real Harness, Skill policy, local stdio MCP transport, checkpoints, gate, artifacts, and Trace. No provider, external research network, or Docker is used. | Implemented. A `completed` result proves the fixture vertical slice passed, not that a real candidate was verified. |
-| Verified | `verified` | Bounded Tavily/HTTPS/GitHub research with explicit cache fallback, candidate-scoped context, and reviewed Docker PoCs for Chroma/Qdrant Local. | `completed` only when live authority and required PoCs pass; otherwise bounded `completed_with_limitations`/`no_safe_winner` or safe `failed`. |
+| Verified | `verified` | Confirmed public Decision Workflow, bounded Tavily/HTTPS/GitHub research, reviewed Docker PoCs, and an explicitly authorized exact-revision model decision/report contribution. | `completed` only when live source, Docker, exact model revision, and non-zero provider usage authority all pass; otherwise bounded `completed_with_limitations`/`no_safe_winner` or safe `failed`. |
 | Offline fixture/replay | no new research run | Bundled immutable or frontend mock data; the lifecycle may be simulated. | Implemented for UI review and deterministic acceptance only. |
 | Live authority | part of `verified` | Refreshes missing/stale official/GitHub evidence and records `live`, `cache`, or `unavailable` per candidate. | Implemented for the fixed Hero Case; external success is never fabricated when credentials/network are absent. |
 
@@ -39,10 +39,15 @@ stage has a dedicated externally enforced destination-allowlisted network. A
 non-ready report exits with status 1 and gives stable codes plus an operator
 action. Use `techscout doctor --json` for automation.
 
-The complete Verified demo is ready only when `TAVILY_API_KEY`, Docker, and the
-reviewed install network are ready. `DASHSCOPE_API_KEY` enables optional bounded
-model-assisted drafting; the deterministic Gate remains authoritative without
-it. `GITHUB_TOKEN` is optional for public read-only access but reduces rate-limit
+The complete Verified Hero demo is ready only when `TAVILY_API_KEY`,
+`DASHSCOPE_API_KEY`, Docker, and the reviewed install network are ready.
+The credential alone never authorizes a paid model call. Real decision/report
+generation is enabled only by the existing bounded Hero smoke entry after its
+authorization freezes an exact immutable model revision, token ceilings,
+pricing snapshot, positive cost ceiling, and one-case execution scope. Normal
+Web startup therefore cannot spend merely because a key is present. The
+deterministic Gate still owns eligibility, terminal state, and publication.
+`GITHUB_TOKEN` is optional for public read-only access but reduces rate-limit
 risk. Never set `TECHSCOUT_DOCKER_EGRESS_ALLOWLIST_ENFORCED=true` until the named
 network is actually restricted externally to approved package destinations.
 
@@ -100,6 +105,7 @@ Check these fields before discussing the result:
 - PoC status and recipe ID: `research_only` is not a failed benchmark.
 - issues/limitations: cache degradation, unavailable live execution, missing recipe, or exhausted recovery must remain visible.
 - Trace checkpoint/recovery links: confirm only the failed stage was repeated.
+- terminal Trace model fields: require the authorized exact revision and positive provider-reported usage before describing the result as model-backed.
 
 ## Demo wording
 
