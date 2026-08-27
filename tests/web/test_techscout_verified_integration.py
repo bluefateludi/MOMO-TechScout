@@ -92,8 +92,9 @@ class _GitHub:
 
 
 class _Poc:
-    def __init__(self, outcome: str = "passed") -> None:
+    def __init__(self, outcome: str = "passed", *, recovery_succeeds: bool = True) -> None:
         self.outcome = outcome
+        self.recovery_succeeds = recovery_succeeds
         self.execute_calls: list[str] = []
         self.rerun_calls: list[PocStage] = []
 
@@ -130,8 +131,11 @@ class _Poc:
         return PocStageAttempt(
             poc_plan_id=plan.poc_plan_id, candidate_id=candidate.candidate_id,
             recipe_id=plan.recipe_id, stage=stage, attempt=2,
-            status=PocStatus.PASSED, exit_code=0, timed_out=False, duration_ms=3,
+            status=(PocStatus.PASSED if self.recovery_succeeds else PocStatus.FAILED),
+            exit_code=0 if self.recovery_succeeds else 1,
+            timed_out=False, duration_ms=3,
             artifact=PocArtifact(artifact_id=f"artifact:{candidate.candidate_id.split(':')[-1]}:recovery", kind="fake-real-docker-stage", sha256="b" * 64, size_bytes=64),
+            failure_code=(None if self.recovery_succeeds else FailureCode.DEPENDENCY_CONFLICT),
         )
 
 
@@ -495,6 +499,121 @@ def test_unsupported_candidate_is_research_only_and_recovery_repeats_one_poc_sta
     assert any(item["event_type"] == "recovery" and "checkpoint=" in item["label"] for item in trace)
 
 
+def test_recovered_run_keeps_stage_trace_and_published_artifacts_consistent(
+    tmp_path: Path,
+) -> None:
+    poc = _Poc("recover")
+
+    detail, report, evidence, _ = _run(
+        tmp_path,
+        _factory(poc=poc),
+        _body([{"name": "Chroma"}]),
+    )
+    run_dir = tmp_path / "outputs" / "techscout" / detail["id"]
+    trace = [
+        json.loads(line)
+        for line in (run_dir / "traces.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("record_type") == "event"
+    ]
+    transitions = [
+        item["attributes"]["from_stage"]
+        for item in trace
+        if item["name"] == "state.transitioned"
+    ]
+
+    assert detail["status"] == "completed"
+    assert detail["recovery"] == {
+        "attempted": True,
+        "failed_stage": "verify",
+        "action": "pin_version_and_rerun_poc",
+        "outcome": "recovered",
+        "attempts_used": 1,
+    }
+    assert transitions.count("research_candidates") == 1
+    assert transitions.count("execute_poc") == 2
+    assert transitions.count("validate") == 2
+
+    retry = next(item for item in trace if item["name"] == "retry.scheduled")
+    started = next(item for item in trace if item["name"] == "recovery.started")
+    finished = next(item for item in trace if item["name"] == "recovery.finished")
+    assert retry["attributes"]["attempt"] == 2
+    assert retry["attributes"]["stage"] == "execute_poc"
+    assert started["attributes"]["checkpoint_id"] == finished["attributes"]["checkpoint_id"]
+    assert started["attributes"]["failure_id"] == finished["attributes"]["failure_id"]
+    assert finished["status"] == "ok"
+    assert finished["attributes"]["succeeded"] is True
+
+    terminal = next(item for item in trace if item["name"] == "terminal.completed")
+    report_path = run_dir / "decision-report.json"
+    manifest_path = run_dir / "run_manifest.json"
+    assert terminal["attributes"]["terminal_status"] == detail["status"]
+    assert terminal["attributes"]["recovery_count"] == 1
+    assert terminal["attributes"]["retry_count"] == 1
+    assert terminal["attributes"]["report_sha256"] == hashlib.sha256(
+        report_path.read_bytes()
+    ).hexdigest()
+    assert terminal["attributes"]["manifest_sha256"] == hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+
+    published_report = json.loads(report_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    poc_history = json.loads((run_dir / "poc-results.json").read_text(encoding="utf-8"))
+    assert manifest["terminal_status"] == detail["status"]
+    assert manifest["report_id"] == published_report["report_id"]
+    assert report["evidence_ids"] == [item["evidence_id"] for item in evidence]
+    assert [item["status"] for item in poc_history] == ["failed", "passed"]
+
+
+def test_exhausted_recovery_stops_after_attempt_two_and_seals_failed_state(
+    tmp_path: Path,
+) -> None:
+    poc = _Poc("recover", recovery_succeeds=False)
+
+    detail, _, _, _ = _run(
+        tmp_path,
+        _factory(poc=poc),
+        _body([{"name": "Chroma"}]),
+    )
+    run_dir = tmp_path / "outputs" / "techscout" / detail["id"]
+    trace = [
+        json.loads(line)
+        for line in (run_dir / "traces.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("record_type") == "event"
+    ]
+    transitions = [
+        item["attributes"]["from_stage"]
+        for item in trace
+        if item["name"] == "state.transitioned"
+    ]
+
+    assert detail["status"] == "failed"
+    assert detail["recovery"]["attempts_used"] == 1
+    assert detail["recovery"]["outcome"] == "exhausted"
+    assert len(poc.execute_calls) == 1
+    assert len(poc.rerun_calls) == 1
+    assert transitions.count("research_candidates") == 1
+    assert transitions.count("execute_poc") == 2
+    assert transitions.count("validate") == 2
+    assert len([item for item in trace if item["name"] == "retry.scheduled"]) == 1
+    assert len([item for item in trace if item["name"] == "recovery.started"]) == 1
+    finished = [item for item in trace if item["name"] == "recovery.finished"]
+    assert len(finished) == 1
+    assert finished[0]["status"] == "error"
+    assert finished[0]["attributes"]["succeeded"] is False
+
+    terminal = next(item for item in trace if item["name"] == "terminal.completed")
+    assert terminal["attributes"]["terminal_status"] == "failed"
+    assert terminal["attributes"]["recovery_count"] == 1
+    assert terminal["attributes"]["retry_count"] == 1
+    assert terminal["attributes"]["report_sha256"] == hashlib.sha256(
+        (run_dir / "decision-report.json").read_bytes()
+    ).hexdigest()
+    assert terminal["attributes"]["manifest_sha256"] == hashlib.sha256(
+        (run_dir / "run_manifest.json").read_bytes()
+    ).hexdigest()
+
+
 def test_non_hero_environment_never_runs_reviewed_recipe(tmp_path: Path) -> None:
     poc = _Poc()
     body = _body([{"name": "Chroma"}])
@@ -518,7 +637,7 @@ def test_one_recovery_transition_reruns_only_one_failed_candidate(tmp_path: Path
 def test_cache_degradation_does_not_mask_exhausted_poc_failure(tmp_path: Path) -> None:
     detail, report, evidence, _ = _run(
         tmp_path,
-        _factory(cache=True, poc=_Poc("recover")),
+        _factory(cache=True, poc=_Poc("recover", recovery_succeeds=False)),
         _body([{"name": "Chroma"}]),
     )
     assert {item["acquisition_state"] for item in evidence} == {"cache"}
