@@ -4,7 +4,8 @@ The words Fast, Live, and Offline describe evidence/execution authority, not jus
 
 > **Current public-journey blocker:** the commit-scoped
 > [M0 Product Gate inspection](../acceptance/2026-08-27-m0-product-gate.md)
-> found that the homepage's visible review is not persisted into the required
+> was rerun on `origin/master@a63703c`, including the Simplified Chinese UI. The
+> homepage's five-lane fixture preview is not persisted into the required
 > Workflow transitions. Submitting either mode creates a queued run, but the run
 > is not executable until Requirements Review and Criteria Confirmation reach
 > `research_ready` through the existing API. The mode table describes execution

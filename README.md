@@ -5,12 +5,13 @@ MOMO TechScout is an evidence-grounded research and verification agent for Pytho
 The current V1 family is deliberately narrow: local-RAG Python vector stores. Chroma and Qdrant Local have reviewed PoC recipes. pgvector and unknown candidates remain research-only unless a later decision adds a trusted fixture. The PoCs check small compatibility contracts; they do not certify production performance.
 
 **Current M0 Product Gate:** the commit-scoped inspection at
-[`origin/master@4eace34`](docs/acceptance/2026-08-27-m0-product-gate.md) found
-that the default homepage can collect and preview a Decision Context, but does
-not persist the required Requirements Review and Criteria Confirmation. A run
-submitted from that page remains `queued` until the existing public Workflow API
-is called out of band. Fast and Verified results below describe execution after
-that gate; they do not imply the default Web journey is closed.
+[`origin/master@a63703c`](docs/acceptance/2026-08-27-m0-product-gate.md) found
+that the default Simplified Chinese homepage can collect and preview a Decision
+Context, but does not persist the required Requirements Review and Criteria
+Confirmation. A run submitted from that page remains `queued` until the existing
+public Workflow API is called out of band. Fast and Verified results below
+describe execution after that gate; they do not imply the default Web journey is
+closed.
 
 **Hero Demo 已验收：** 以 `origin/master@b7516a7b478834614f6ce2ccf1ae63a5c73c3140` 为实际运行基线的 Chromium 验收中，连续三次 Fast Demo 均在 120 秒预算内终态化，浏览器 wall-clock 分别为 **45.081 s、15.360 s、12.879 s**；验收记录与稳定性修复随后合入 PR #92（`7c6a9ed25b50f790d3a0b39a541e46258da71f5a`）。这是冻结 synthetic Fast Demo 的产品验收，不是 Live 模型质量或组件性能基准。
 
@@ -62,9 +63,10 @@ techscout serve
 
 Open `http://127.0.0.1:8000` to inspect the Decision Context and review UI, or
 open the synthetic offline fixture. On the M0-inspected baseline, submitting the
-homepage form creates a queued run but does not persist the Workflow
-confirmations needed to execute it. Do not present that path as a completed
-public journey; use the [M0 Product Gate authority](docs/acceptance/2026-08-27-m0-product-gate.md)
+homepage form after checking all five visible review lanes creates a queued run
+but does not persist the Workflow confirmations needed to execute it. The page
+truthfully labels that review as a fixture preview. Do not present that path as a
+completed public journey; use the [M0 Product Gate authority](docs/acceptance/2026-08-27-m0-product-gate.md)
 for the exact boundary. Keep all synthetic labeling visible. The server binds to
 loopback by default because the local product has no authentication.
 

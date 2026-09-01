@@ -6,8 +6,9 @@ audit remain historical final-delivery authorities at
 `origin/master@ca7e65a3c1bcaa8e5da2e9b2776c615bceb74aab`; they are not a statement
 about the latest public journey. The current commit-scoped status authority is
 the [2026-08-27 M0 Product Gate inspection](../acceptance/2026-08-27-m0-product-gate.md),
-which records the default Web Workflow blocker without rewriting historical
-MOMO Scholar claims.
+rerun on `origin/master@a63703c` after the Simplified Chinese UI merged. It
+records the still-open default Web Workflow blocker without rewriting
+historical MOMO Scholar claims.
 
 ## Status vocabulary
 
