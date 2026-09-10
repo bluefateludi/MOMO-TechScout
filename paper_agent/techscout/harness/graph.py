@@ -299,7 +299,7 @@ class TechScoutHarness:
             result = self._execute_stage(failed_stage, retry_state, artifacts)
             updated = self._apply_result(
                 state,
-                ResearchStage.RECOVER_ONCE,
+                failed_stage,
                 result,
             )
         except StageDeadlineExceeded:
