@@ -72,6 +72,27 @@ def test_v2_create_enters_real_harness_queue(tmp_path):
         assert response.json()["synthetic"] is True
 
 
+def test_v2_verified_queue_is_not_projected_as_a_fast_synthetic_fixture(tmp_path):
+    body = {
+        "question": "Choose a local vector store",
+        "project_context": "A Python local RAG application",
+        "environment": {
+            "python_version": "3.11", "operating_system": "Linux",
+            "deployment": "single node",
+        },
+        "hard_constraints": ["local persistence"],
+        "candidates": [{"name": "Chroma"}],
+        "mode": "verified",
+    }
+    with _client(tmp_path) as client:
+        response = client.post("/api/v2/runs", json=body)
+
+    assert response.status_code == 202
+    assert response.json()["mode"] == "verified"
+    assert response.json()["synthetic"] is False
+    assert response.json()["fixture_name"] is None
+
+
 def test_v2_idempotency_context_health_and_readiness(tmp_path):
     body = {
         "question": "Choose a local vector store",

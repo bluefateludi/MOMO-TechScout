@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { techScoutApi } from "../api";
+import type { DecisionContext, DecisionWorkflow } from "../api/contracts";
 import { TECHSCOUT_FIXTURE_ID, fixtureTrace, syntheticNotice, techScoutEvidence, techScoutReport, techScoutRun } from "../api/techscoutFixtures";
 import { CandidatePage } from "../routes/CandidatePage";
 import { Layout } from "../components/Layout";
@@ -49,13 +50,25 @@ describe("TechScout task input", () => {
   });
 
   it("navigates after the synthetic mock accepts a task", async () => {
-    vi.spyOn(techScoutApi, "createRun").mockResolvedValue({ data: techScoutRun });
-    render(<MemoryRouter><Routes><Route path="/" element={<HomePage/>}/><Route path="/runs/:id" element={<LocationProbe/>}/></Routes></MemoryRouter>);
+    const run = { ...techScoutRun, id: "00000000-0000-4000-8000-000000000110", status: "queued" as const };
+    const requirements = { run_id: run.id, state: "requirements_review", version: 2, decision_context: {} as DecisionContext, requirements: [{ requirement_id: "requirement:web-1", kind: "hard_constraint", statement: "local persistence" }], requirements_confirmed: false, selection_criteria: null, research_plan: null, created_at: run.created_at, updated_at: run.created_at } as DecisionWorkflow;
+    const criteria = { ...requirements, state: "criteria_confirmation", version: 3, requirements_confirmed: true, selection_criteria: { contract_id: "criteria:web", run_id: run.id, requirements: requirements.requirements, hard_constraints: [{ item_id: "criterion:web-1", requirement_ids: ["requirement:web-1"], statement: "local persistence" }], evaluation_criteria: [], unknowns: [], research_questions: [{ item_id: "question:web-1", requirement_ids: ["requirement:web-1"], question: "What Evidence establishes local persistence?" }], poc_checks: [{ item_id: "poc:web-1", requirement_ids: ["requirement:web-1"], check: "Verify local persistence" }] }, research_plan: { plan_id: "research-plan:web", criteria_contract_id: "criteria:web", investigation_dimensions: ["local persistence"], required_capabilities: ["local persistence"], planned_evidence: ["official docs"], poc_intent: "Verify local persistence" } } as DecisionWorkflow;
+    vi.spyOn(techScoutApi, "createRun").mockResolvedValue({ data: run });
+    vi.spyOn(techScoutApi, "reviewRequirements").mockResolvedValue({ data: requirements });
+    vi.spyOn(techScoutApi, "confirmRequirements").mockResolvedValue({ data: criteria });
+    vi.spyOn(techScoutApi, "confirmCriteria").mockResolvedValue({ data: { ...criteria, state: "research_ready" } as DecisionWorkflow });
+    vi.spyOn(techScoutApi, "getDecisionContext").mockResolvedValue({ data: criteria.decision_context });
+    vi.spyOn(techScoutApi, "getWorkflow").mockResolvedValue({ data: requirements });
+    vi.spyOn(techScoutApi, "getRun").mockResolvedValue({ data: run });
+    render(<MemoryRouter><Routes><Route path="/" element={<HomePage/>}/><Route path="/runs/:id/workflow" element={<HomePage/>}/><Route path="/runs/:id" element={<LocationProbe/>}/></Routes></MemoryRouter>);
     await userEvent.click(screen.getByRole("button", { name: /review decision rules/i }));
-    expect(await screen.findByRole("heading", { name: /confirm the work/i })).toBeInTheDocument();
-    for (const checkbox of screen.getAllByRole("checkbox")) await userEvent.click(checkbox);
-    await userEvent.click(screen.getByRole("button", { name: /start techscout task/i }));
-    expect(await screen.findByText(`/runs/${TECHSCOUT_FIXTURE_ID}`)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /review user requirements/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("button", { name: /confirm requirements review/i }));
+    expect(await screen.findByRole("heading", { name: /confirm selection criteria/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("button", { name: /confirm criteria and start research/i }));
+    expect(await screen.findByText(`/runs/${run.id}`)).toBeInTheDocument();
   });
 });
 
@@ -89,6 +102,14 @@ describe("fixture-backed TechScout views", () => {
     expect(await screen.findByText("Completed with limitations.")).toBeInTheDocument();
     expect(screen.getByText(/no trusted verification recipe/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /open decision report/i })).toBeInTheDocument();
+  });
+
+  it("labels a Verified run without borrowing the Fast synthetic boundary", async () => {
+    const verified = { ...techScoutRun, mode: "verified" as const, synthetic: false, status: "running" as const };
+    vi.mocked(techScoutApi.getRun).mockResolvedValue({ data: verified });
+    render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}`]}><Routes><Route path="/runs/:id" element={<RunPage/>}/></Routes></MemoryRouter>);
+    expect(await screen.findByRole("note")).toHaveTextContent(/live or cached authoritative sources/i);
+    expect(screen.queryByText(/Fast Demo uses frozen synthetic data/i)).not.toBeInTheDocument();
   });
 
   it("exposes the current stage to assistive technology", async () => {

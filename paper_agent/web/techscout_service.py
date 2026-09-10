@@ -306,11 +306,12 @@ class TechScoutProjectionService:
 
     @staticmethod
     def _summary(row: TechScoutRegistryRun) -> TechScoutRunSummary:
+        fast_demo = row.request.mode == "fast"
         return TechScoutRunSummary(
             id=row.id,
             status=row.status,
-            synthetic=True,
-            fixture_name="wave2_fast_demo",
+            synthetic=fast_demo,
+            fixture_name="wave2_fast_demo" if fast_demo else None,
             question=row.request.question,
             mode=row.request.mode,
             progress=row.progress,

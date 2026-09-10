@@ -41,11 +41,11 @@ footer { max-width: 1180px; margin: 0 auto; padding: 1.4rem 1rem; display: flex;
 .workspace-thesis > span { color: var(--muted); font: .72rem var(--mono); }
 .workspace-thesis p { margin: .6rem 0 .8rem; color: var(--muted); }
 .workspace-thesis a { color: var(--accent); font-weight: 700; text-decoration: none; }
-.workspace-steps { display: grid; grid-template-columns: repeat(3, 1fr); margin-bottom: 1.2rem; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; }
+.workspace-steps { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 1.2rem; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; }
 .workspace-steps > span { padding: .85rem 1rem; display: grid; grid-template-columns: 24px 1fr; column-gap: .5rem; color: var(--muted); border-right: 1px solid var(--rule); font-size: .78rem; }
 .workspace-steps > span:last-child { border-right: 0; } .workspace-steps b, .workspace-steps small { grid-column: 2; }
 .workspace-steps b { color: var(--ink); font-size: .9rem; } .workspace-steps span[data-active="true"] { background: var(--accent-soft); } .workspace-steps span[data-active="true"] b { color: var(--accent); }
-.compatibility-note, .workspace-error, .fixture-boundary { margin-bottom: 1rem; padding: .85rem 1rem; display: grid; grid-template-columns: 190px 1fr auto; gap: 1rem; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
+.compatibility-note, .workspace-error, .workflow-boundary { margin-bottom: 1rem; padding: .85rem 1rem; display: grid; grid-template-columns: 190px 1fr auto; gap: 1rem; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
 .workspace-error { border-color: #e5bcbc; background: var(--danger-soft); } .workspace-error button { color: var(--danger); background: transparent; border: 0; cursor: pointer; }
 .context-stage { display: grid; grid-template-columns: 54px minmax(0, 1fr) 260px; gap: 1rem; align-items: start; }
 .stage-rail { padding-top: .8rem; color: var(--muted); text-align: center; font: .68rem var(--mono); }
@@ -81,9 +81,10 @@ textarea:focus, input:focus { border-color: var(--accent); outline: 1px solid va
 .decision-ledger button { justify-self: start; padding: 0; color: var(--accent); background: none; border: 0; cursor: pointer; font-size: .78rem; }
 .review-stage { padding: 1.5rem; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
 .review-header { display: flex; justify-content: space-between; gap: 1rem; align-items: start; padding-bottom: 1rem; }
-.review-header > button { color: var(--accent); background: none; border: 0; cursor: pointer; }
-.fixture-boundary { grid-template-columns: 170px 1fr; color: #3d554f; background: var(--accent-soft); border-color: #bed6d0; } .fixture-boundary p { margin: 0; }
+.review-header > a { color: var(--accent); font-weight: 700; text-decoration: none; }
+.workflow-boundary { grid-template-columns: 170px 1fr; color: #3d554f; background: var(--accent-soft); border-color: #bed6d0; } .workflow-boundary p { margin: 0; }
 .review-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.research-plan-card { grid-column: 1 / -1; padding: 1.2rem; background: #f4f1e8; border-top: 1px solid var(--rule); } .research-plan-card strong { display: block; margin: .35rem 0; font-family: var(--mono); font-size: .78rem; overflow-wrap: anywhere; } .research-plan-card p { max-width: 72ch; }
 .review-column { min-height: 240px; padding: 1rem; display: flex; flex-direction: column; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
 .review-column:nth-child(even) { border-right: 0; } .review-column header { display: flex; gap: .65rem; } .review-column header > span { color: var(--accent); font: 700 .75rem var(--mono); }
 .review-column h3 { margin-bottom: .2rem; font-size: 1rem; } .review-column header small, .review-column li small { color: var(--muted); font-size: .74rem; }
