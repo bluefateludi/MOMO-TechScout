@@ -2,6 +2,15 @@
 
 The words Fast, Live, and Offline describe evidence/execution authority, not just a speed toggle. Do not use them interchangeably in a demo.
 
+> **Current public-journey blocker:** the commit-scoped
+> [M0 Product Gate inspection](../acceptance/2026-08-27-m0-product-gate.md)
+> was rerun on `origin/master@a63703c`, including the Simplified Chinese UI. The
+> homepage's five-lane fixture preview is not persisted into the required
+> Workflow transitions. Submitting either mode creates a queued run, but the run
+> is not executable until Requirements Review and Criteria Confirmation reach
+> `research_ready` through the existing API. The mode table describes execution
+> authority after that gate; it does not claim the default Web journey is closed.
+
 ## Mode truth table
 
 | User-facing path | Request/API value | Evidence and execution | Current outcome |
@@ -46,7 +55,12 @@ it. `GITHUB_TOKEN` is optional for public read-only access but reduces rate-limi
 risk. Never set `TECHSCOUT_DOCKER_EGRESS_ALLOWLIST_ENFORCED=true` until the named
 network is actually restricted externally to approved package destinations.
 
-Then open `http://127.0.0.1:8000`. The v2 API is under `/api/v2/runs`; the UI submits `fast` or `verified`. The default server is single-process and loopback-only. Binding beyond loopback requires the explicit CLI flag and is not recommended because authentication is not implemented.
+Then open `http://127.0.0.1:8000`. The v2 API is under `/api/v2/runs`; the UI
+can submit `fast` or `verified`, but on the M0-inspected baseline it does not
+persist the Workflow confirmations required to leave `queued`. The default
+server is single-process and loopback-only. Binding beyond loopback requires the
+explicit CLI flag and is not recommended because authentication is not
+implemented.
 
 `techscout --help`, `techscout doctor --help`, and `techscout serve --help` show
 the current mode and readiness boundaries. A non-loopback bind is rejected unless
