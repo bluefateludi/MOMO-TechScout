@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -69,7 +70,10 @@ from paper_agent.techscout.runtime_skills import fixed_skill_registry
 from paper_agent.techscout.context import CandidateContextData, ContextEngine, ContextStage
 from paper_agent.techscout.research import (
     AcquisitionState,
+    ConservativeFactExtractionAdapter,
+    FactStance,
     LiveEvidenceResearchService,
+    ResearchDelivery,
     hero_case_policy,
 )
 from paper_agent.techscout.sandbox.recipes import RecipeRegistry
@@ -80,7 +84,7 @@ from paper_agent.techscout.tools.contracts import SearchOutput, SmokeTestOutput
 from paper_agent.techscout.tools.runtime import PolicyToolRuntime, StdioMcpRuntime
 from paper_agent.techscout.validation import REQUIRED_TERMINAL_ARTIFACTS, ValidationGate, ValidationInput
 from paper_agent.web.registry import RunRegistry, TechScoutRegistryRun, utc_now
-from paper_agent.web.errors import ErrorKind, WebError
+from paper_agent.web.errors import ClassifiedError, ErrorKind, WebError
 from paper_agent.web.task_queue import InMemoryRunQueue, RunQueue
 from paper_agent.web.worker import Processor, TechScoutWorker, WorkResult
 from paper_agent.web.techscout_api_models import (
@@ -134,6 +138,10 @@ class ModelDecisionDraft(StrictModel):
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sha_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _slug(value: str) -> str:
@@ -452,14 +460,26 @@ class DeterministicStageServices:
             for item in self.poc_results
             if item.status is PocStatus.PASSED
         }
+        constraint_statuses = getattr(self, "constraint_statuses", {})
+        eligible_ids = {
+            candidate_id
+            for candidate_id in passed_ids
+            if not constraint_statuses
+            or all(
+                constraint_statuses.get(candidate_id, {}).get(constraint)
+                is ConstraintStatus.SATISFIED
+                for constraint in state.request.hard_constraints
+            )
+        }
         candidate = next(
-            (item for item in state.request.candidates if item.candidate_id in passed_ids),
+            (item for item in state.request.candidates if item.candidate_id in eligible_ids),
             state.request.candidates[0],
         )
-        evidence_by_candidate_constraint = {
-            (item.candidate_id, item.constraint): item.evidence_id
-            for item in self.evidence
-        }
+        evidence_by_candidate_constraint: dict[tuple[str, str], list[str]] = {}
+        for evidence_item in self.evidence:
+            evidence_by_candidate_constraint.setdefault(
+                (evidence_item.candidate_id, evidence_item.constraint), []
+            ).append(evidence_item.evidence_id)
         default_summary = (
             "No safe winner is claimed because the frozen provider cache was used."
             if self.scenario == "cached_degradation"
@@ -471,25 +491,42 @@ class DeterministicStageServices:
             if self.scenario == "docker_unavailable"
             else "No safe winner is claimed because neither live nor cached evidence is available."
             if self.scenario == "research_unavailable"
+            else "No safe winner is claimed because authoritative evidence does not establish every must-have."
+            if self.scenario == "insufficient_evidence"
             else "No safe winner is claimed because the reviewed PoC failed after bounded recovery."
             if self.scenario == "verification_failed"
             else "Live evidence and reviewed Docker PoCs satisfy the Hero Case gates; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
-            if self.scenario == "verified" and passed_ids
+            if self.scenario == "verified" and eligible_ids
             else "All supported candidates passed frozen evidence and deterministic local PoC validation; the first equally qualified item in the user-provided shortlist is the deterministic tie-break."
-            if passed_ids
+            if eligible_ids
             else "The first deterministic PoC attempt requires one bounded recovery."
         )
         candidate, summary, model_tokens = self._decision_report_contribution(
-            state, passed_ids=passed_ids, default_candidate=candidate,
+            state, passed_ids=eligible_ids, default_candidate=candidate,
             default_summary=default_summary,
         )
         model_limitation = getattr(self, "model_authority_limitation", None)
         explicit_limited = self.scenario in {
             "cached_degradation", "verified_limited", "research_only",
-            "docker_unavailable", "research_unavailable",
+            "docker_unavailable", "research_unavailable", "insufficient_evidence",
         } or model_limitation is not None
-        passed = candidate.candidate_id in passed_ids
+        passed = candidate.candidate_id in eligible_ids
         limited = explicit_limited or not passed
+
+        def constraint_status(candidate_id: str, constraint: str, name: str) -> ConstraintStatus:
+            if _recipe_for(name) is None or candidate_id not in passed_ids:
+                return ConstraintStatus.UNKNOWN
+            if self.scenario in {
+                "cached_degradation", "verified_limited", "docker_unavailable",
+                "research_unavailable",
+            }:
+                return ConstraintStatus.UNKNOWN
+            if constraint_statuses:
+                return constraint_statuses.get(candidate_id, {}).get(
+                    constraint, ConstraintStatus.UNKNOWN
+                )
+            return ConstraintStatus.UNKNOWN if limited else ConstraintStatus.SATISFIED
+
         report = DecisionReport(
             report_id=f"report:{state.run_id.split(':', 1)[1]}",
             run_id=state.run_id,
@@ -500,15 +537,11 @@ class DeterministicStageServices:
                 ConstraintResult(
                     candidate_id=item.candidate_id,
                     constraint=constraint,
-                    status=(
-                        ConstraintStatus.UNKNOWN
-                        if limited or _recipe_for(item.name) is None
-                        else ConstraintStatus.SATISFIED
-                    ),
-                    evidence_ids=(
-                        ()
-                        if limited or _recipe_for(item.name) is None
-                        else (evidence_by_candidate_constraint[(item.candidate_id, constraint)],)
+                    status=constraint_status(item.candidate_id, constraint, item.name),
+                    evidence_ids=tuple(
+                        evidence_by_candidate_constraint.get(
+                            (item.candidate_id, constraint), ()
+                        )
                     ),
                     reason=(
                         "Frozen cache fallback limits the decision."
@@ -521,6 +554,8 @@ class DeterministicStageServices:
                         if self.scenario == "docker_unavailable"
                         else "Live and cached evidence are unavailable."
                         if self.scenario == "research_unavailable"
+                        else "Authoritative evidence does not establish this must-have."
+                        if self.scenario == "insufficient_evidence"
                         else "The reviewed PoC failed after bounded recovery."
                         if self.scenario == "verification_failed"
                         else "Exact model revision and provider token authority are unavailable."
@@ -544,6 +579,8 @@ class DeterministicStageServices:
                 if self.scenario == "docker_unavailable"
                 else ("live_evidence_unavailable",)
                 if self.scenario == "research_unavailable"
+                else ("insufficient_must_have_evidence",)
+                if self.scenario == "insufficient_evidence"
                 else ("verification_failed",)
                 if self.scenario == "verification_failed"
                 else (model_limitation,)
@@ -606,14 +643,22 @@ class DeterministicStageServices:
                 code=(
                     FailureCode.POC_RECIPE_UNSUPPORTED
                     if self.scenario == "research_only"
+                    else FailureCode.REPORT_EVIDENCE_INVALID
+                    if self.scenario == "insufficient_evidence"
                     else FailureCode.TOOL_UNAVAILABLE
                 ),
                 stage=(
                     FailureStage.POC_PLANNING
                     if self.scenario == "research_only"
+                    else FailureStage.VALIDATION
+                    if self.scenario == "insufficient_evidence"
                     else FailureStage.POC_EXECUTION
                 ),
-                message="The requested live verification boundary is unavailable.",
+                message=(
+                    "No candidate has authoritative evidence for every must-have."
+                    if self.scenario == "insufficient_evidence"
+                    else "The requested live verification boundary is unavailable."
+                ),
                 recoverable=False,
                 recovery_action=RecoveryAction.PUBLISH_LIMITED_RESULT,
                 attempt=1,
@@ -659,6 +704,14 @@ class DeterministicStageServices:
             "source_acquisition_states": {
                 key: value.value
                 for key, value in getattr(self, "source_acquisition_states", {}).items()
+            },
+            "constraint_statuses": {
+                candidate_id: {
+                    constraint: status.value for constraint, status in statuses.items()
+                }
+                for candidate_id, statuses in getattr(
+                    self, "constraint_statuses", {}
+                ).items()
             },
             "failed_poc_stage": {
                 key: value.value
@@ -713,6 +766,15 @@ class DeterministicStageServices:
                 key: AcquisitionState(value)
                 for key, value in payload.get("source_acquisition_states", {}).items()
             }
+            self.constraint_statuses = {
+                candidate_id: {
+                    constraint: ConstraintStatus(status)
+                    for constraint, status in statuses.items()
+                }
+                for candidate_id, statuses in payload.get(
+                    "constraint_statuses", {}
+                ).items()
+            }
 
 
 class VerifiedStageServices:
@@ -735,6 +797,7 @@ class VerifiedStageServices:
     ) -> None:
         self.acquisition_states: dict[str, AcquisitionState] = {}
         self.source_acquisition_states: dict[str, AcquisitionState] = {}
+        self.constraint_statuses: dict[str, dict[str, ConstraintStatus]] = {}
         self._failed_poc_stage: dict[str, PocStage] = {}
         self.run_dir = kwargs["run_dir"]
         self.progress_sink = kwargs["progress_sink"]
@@ -763,6 +826,7 @@ class VerifiedStageServices:
         self.model_completion_tokens: int | None = None
         self.model_total_tokens: int | None = None
         self.model_revision: str | None = None
+        self._fact_extractor = ConservativeFactExtractionAdapter()
         DeterministicStageServices._load_workspace(self)
 
     def _workspace_path(self) -> Path:
@@ -824,8 +888,7 @@ class VerifiedStageServices:
             )
             self.acquisition_states[candidate.candidate_id] = delivery.research.state
             self.sources.extend(delivery.research.documents)
-            selected_chunks = tuple(delivery.context.chunks)
-            self.chunks.extend(selected_chunks)
+            self.chunks.extend(delivery.research.chunks)
             attempt_by_reference = {
                 item.reference.rstrip("/"): item.state
                 for item in delivery.research.attempts
@@ -835,26 +898,11 @@ class VerifiedStageServices:
                 self.source_acquisition_states[source.source_id] = attempt_by_reference.get(
                     source.url.rstrip("/"), delivery.research.state
                 )
-            if delivery.context.chunks:
-                selected = delivery.context.chunks[0]
-                source = next(
-                    item for item in delivery.context.sources
-                    if item.source_id == selected.source_id
-                )
-                self.evidence.extend(
-                    CandidateEvidence(
-                        evidence_id=f"evidence:{_slug(candidate.name)}:{index:02d}",
-                        candidate_id=candidate.candidate_id,
-                        constraint=constraint,
-                        claim=selected.text,
-                        source_ids=(source.source_id,),
-                        chunk_ids=(selected.chunk_id,),
-                        kind=EvidenceKind.RETRIEVED_FACT,
-                    )
-                    for index, constraint in enumerate(
-                        state.request.hard_constraints, start=1
-                    )
-                )
+            self._record_constraint_evidence(
+                candidate=candidate,
+                constraints=state.request.hard_constraints,
+                delivery=delivery,
+            )
             self.trace_sink(
                 "tool",
                 "research",
@@ -873,6 +921,49 @@ class VerifiedStageServices:
             }),
             tool_calls=len(state.request.candidates),
         )
+
+    def _record_constraint_evidence(
+        self,
+        *,
+        candidate: Candidate,
+        constraints: tuple[str, ...],
+        delivery: ResearchDelivery,
+    ) -> None:
+        statuses: dict[str, ConstraintStatus] = {}
+        template_query = delivery.research.query_plan.queries[0]
+        for constraint in constraints:
+            stances: set[FactStance] = set()
+            seen: set[tuple[str, str, FactStance]] = set()
+            query = template_query.model_copy(update={"question": constraint})
+            for chunk in delivery.research.chunks:
+                for draft in self._fact_extractor.extract(query=query, excerpt=chunk.text):
+                    key = (chunk.source_id, draft.statement, draft.stance)
+                    if key in seen or draft.stance in stances:
+                        continue
+                    seen.add(key)
+                    stances.add(draft.stance)
+                    identity = "\x1e".join(
+                        (candidate.candidate_id, constraint, chunk.chunk_id, draft.statement)
+                    )
+                    self.evidence.append(
+                        CandidateEvidence(
+                            evidence_id=f"evidence:{_slug(candidate.name)}:{_sha(identity)[:16]}",
+                            candidate_id=candidate.candidate_id,
+                            constraint=constraint,
+                            claim=draft.statement,
+                            source_ids=(chunk.source_id,),
+                            chunk_ids=(chunk.chunk_id,),
+                            kind=EvidenceKind.RETRIEVED_FACT,
+                        )
+                    )
+            statuses[constraint] = (
+                ConstraintStatus.SATISFIED
+                if stances == {FactStance.AFFIRMS}
+                else ConstraintStatus.NOT_SATISFIED
+                if stances == {FactStance.DENIES}
+                else ConstraintStatus.UNKNOWN
+            )
+        self.constraint_statuses[candidate.candidate_id] = statuses
 
     def _plan(self, state: ResearchState) -> StageResult:
         plan = ResearchPlan(
@@ -1000,6 +1091,7 @@ class VerifiedStageServices:
         by_id = {item.candidate_id: item for item in state.request.candidates}
         plan_by_id = {item.candidate_id: item for item in self.poc_plans}
         recovered: list[PocResult] = []
+        failures = list(state.failures)
         for result in self.poc_results:
             stage = self._failed_poc_stage.get(result.candidate_id)
             if stage is None:
@@ -1020,6 +1112,11 @@ class VerifiedStageServices:
             )
             merged = result.model_copy(update={
                 "status": complete_status,
+                "resolved_version": (
+                    self.recipe_registry.get(plan_by_id[result.candidate_id].recipe_id).package_version
+                    if complete_status is PocStatus.PASSED
+                    else result.resolved_version
+                ),
                 "exit_code": attempt.exit_code,
                 "timed_out": attempt.timed_out,
                 "duration_ms": result.duration_ms + attempt.duration_ms,
@@ -1032,6 +1129,21 @@ class VerifiedStageServices:
             })
             recovered.append(merged)
             self.poc_history.append(merged)
+            if merged.status in {PocStatus.FAILED, PocStatus.TIMED_OUT}:
+                failures.append(
+                    Failure(
+                        failure_id=(
+                            f"failure:{state.run_id.split(':', 1)[1]}:"
+                            f"{_slug(result.candidate_id)}:recovery"
+                        ),
+                        code=merged.failure_code or FailureCode.POC_NONZERO_EXIT,
+                        stage=FailureStage.POC_EXECUTION,
+                        message="The reviewed Docker PoC stage failed after recovery.",
+                        recoverable=False,
+                        recovery_action=RecoveryAction.PUBLISH_LIMITED_RESULT,
+                        attempt=2,
+                    )
+                )
             checkpoint = state.checkpoint.checkpoint_id if state.checkpoint else "checkpoint:unavailable"
             self.trace_sink(
                 "recovery", "verify", attempt.status.value,
@@ -1041,6 +1153,7 @@ class VerifiedStageServices:
         return StageResult(
             state=state.model_copy(update={
                 "poc_result_ids": tuple(item.poc_result_id for item in recovered),
+                "failures": tuple(failures),
             }),
             tool_calls=1,
         )
@@ -1096,6 +1209,16 @@ class VerifiedStageServices:
                 if self.poc_results and all(item.status is PocStatus.RESEARCH_ONLY for item in self.poc_results)
                 else "docker_unavailable"
             )
+        elif not any(
+            all(
+                self.constraint_statuses.get(item.candidate_id, {}).get(constraint)
+                is ConstraintStatus.SATISFIED
+                for constraint in state.request.hard_constraints
+            )
+            for item in self.poc_results
+            if item.status is PocStatus.PASSED
+        ):
+            self.scenario = "insufficient_evidence"
         else:
             self.scenario = "verified"
         return DeterministicStageServices._validate(self, state)
@@ -1251,8 +1374,8 @@ class TechScoutRunEngine:
         self.verified_timeout_seconds = verified_timeout_seconds
 
     def run(self, row: TechScoutRegistryRun) -> tuple[TechScoutProjectionBundle, str]:
-        run_dir = self.output_root / "techscout" / row.id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = self._execution_dir(row)
+        self._prepare_execution_dir(row, run_dir)
         core_id = f"run:{row.id}"
         scenario = self._scenario(row.request)
         started = time.monotonic()
@@ -1286,6 +1409,8 @@ class TechScoutRunEngine:
             "progress_sink": progress,
             "trace_sink": lambda event_type, stage, status, label: self.registry.append_event(
                 row.id, event_type=event_type, stage=stage, status=status, label=label,
+                worker_id=row.worker_id, lease_token=row.lease_token,
+                fencing_token=row.fencing_token,
             ),
             "trace": trace,
         }
@@ -1310,6 +1435,8 @@ class TechScoutRunEngine:
                 result = harness.run(state)
         bundle = self._bundle(row, result, services, scenario, started)
         self._publish(run_dir, result, services, bundle)
+        report_path = run_dir / "decision-report.json"
+        manifest_path = run_dir / "run_manifest.json"
         trace.record_terminal(
             terminal_status=result.state.terminal_status.value if result.state.terminal_status else "failed",
             gate_outcome=result.state.gate_outcome.value if result.state.gate_outcome else "failed",
@@ -1322,8 +1449,8 @@ class TechScoutRunEngine:
             completion_tokens=getattr(services, "model_completion_tokens", None) or 0,
             retry_count=result.state.recovery_count,
             recovery_count=result.state.recovery_count,
-            report_sha256=_sha(result.report.model_dump_json() if result.report else ""),
-            manifest_sha256=_sha(result.manifest.model_dump_json() if result.manifest else ""),
+            report_sha256=_sha_file(report_path),
+            manifest_sha256=_sha_file(manifest_path),
             status="ok" if result.state.terminal_status is not TerminalStatus.FAILED else "error",
             context={
                 "model_revision": getattr(services, "model_revision", None),
@@ -1336,10 +1463,15 @@ class TechScoutRunEngine:
         return bundle, str((run_dir / "web-projection.json").relative_to(self.output_root))
 
     def publish_failed_projection(
-        self, row: TechScoutRegistryRun, code: str = "execution_initialization_failed",
+        self,
+        row: TechScoutRegistryRun,
+        code: str = "execution_initialization_failed",
+        *,
+        error_kind: ErrorKind = ErrorKind.PERMANENT,
+        retry_count: int = 0,
     ) -> tuple[TechScoutProjectionBundle, str]:
-        run_dir = self.output_root / "techscout" / row.id
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = self._execution_dir(row)
+        self._prepare_execution_dir(row, run_dir)
         progress = TechScoutProgress(
             stage="terminal", completed_stages=[], elapsed_seconds=0,
         )
@@ -1378,7 +1510,7 @@ class TechScoutRunEngine:
             run_id=f"run:{row.id}",
             terminal_status=TerminalStatus.FAILED,
             artifact_ids=(),
-            limitation_codes=(),
+            limitation_codes=(code,),
         )
         failed_files = {
             "request.json": row.request.model_dump_json(indent=2),
@@ -1400,12 +1532,66 @@ class TechScoutRunEngine:
         trace = TechScoutTraceRecorder(trace_path, run_id=f"run:{row.id}")
         trace.record_terminal(
             terminal_status="failed", gate_outcome="failed", latency_ms=0,
-            prompt_tokens=0, completion_tokens=0, retry_count=0, recovery_count=0,
+            prompt_tokens=0, completion_tokens=0, retry_count=retry_count,
+            recovery_count=0,
             report_sha256=_sha(""), manifest_sha256=_sha(failed_manifest.model_dump_json()),
             status="error",
+            context={"error_kind": error_kind.value, "error_code": code},
         )
         trace.seal()
         return bundle, str(path.relative_to(self.output_root))
+
+    def _execution_dir(self, row: TechScoutRegistryRun) -> Path:
+        logical_run_dir = self.output_root / "techscout" / row.id
+        if row.fencing_token <= 1:
+            return logical_run_dir
+        return logical_run_dir / "attempts" / f"fence-{row.fencing_token:08d}"
+
+    def _prepare_execution_dir(
+        self, row: TechScoutRegistryRun, execution_dir: Path,
+    ) -> None:
+        execution_dir.mkdir(parents=True, exist_ok=True)
+        if row.fencing_token <= 1 or (execution_dir / "stage-workspace.json").is_file():
+            return
+        logical_run_dir = self.output_root / "techscout" / row.id
+        candidates: list[Path] = []
+        attempts_dir = logical_run_dir / "attempts"
+        if attempts_dir.is_dir():
+            candidates.extend(sorted(
+                (
+                    path for path in attempts_dir.glob("fence-*")
+                    if (
+                        path.is_dir()
+                        and path != execution_dir
+                        and path.name.removeprefix("fence-").isdigit()
+                        and int(path.name.removeprefix("fence-")) < row.fencing_token
+                    )
+                ),
+                reverse=True,
+            ))
+        candidates.append(logical_run_dir)
+        source = next(
+            (path for path in candidates if (path / "stage-workspace.json").is_file()),
+            None,
+        )
+        if source is None:
+            return
+        for name in ("stage-workspace.json", "stage-workspace.backup"):
+            candidate = source / name
+            if candidate.is_file():
+                shutil.copyfile(candidate, execution_dir / name)
+        checkpoint = source / "harness-checkpoints.sqlite3"
+        if checkpoint.is_file():
+            with (
+                sqlite3.connect(checkpoint) as source_db,
+                sqlite3.connect(execution_dir / checkpoint.name) as destination_db,
+            ):
+                source_db.backup(destination_db)
+        poc_artifacts = source / "poc-artifacts"
+        if poc_artifacts.is_dir():
+            shutil.copytree(
+                poc_artifacts, execution_dir / "poc-artifacts", dirs_exist_ok=True,
+            )
 
     @staticmethod
     def _scenario(request: TechScoutCreateRunRequest) -> str:
@@ -1627,8 +1813,16 @@ class TechScoutRunEngine:
             )
         return TechScoutProjectionBundle(detail=detail, report=report_projection, evidence=evidence)
 
-    def _publish(self, run_dir, result, services, bundle) -> None:
+    def _publish(self, run_dir, result, services, bundle) -> RunManifest:
         request = result.state.request
+        manifest = result.manifest or RunManifest(
+            run_id=request.run_id,
+            terminal_status=TerminalStatus.FAILED,
+            artifact_ids=(),
+            limitation_codes=tuple(
+                dict.fromkeys(failure.code.value for failure in result.state.failures)
+            ),
+        )
         files = {
             "request.json": request.model_dump_json(indent=2),
             "research-plan.json": result.state.plan.model_dump_json(indent=2) if result.state.plan else "{}",
@@ -1638,11 +1832,12 @@ class TechScoutRunEngine:
             "poc-results.json": json.dumps([item.model_dump(mode="json") for item in services.poc_history], indent=2),
             "decision-report.json": result.report.model_dump_json(indent=2) if result.report else "{}",
             "decision-report.md": f"# TechScout decision\n\n{result.report.summary if result.report else 'Run failed safely.'}\n",
-            "run_manifest.json": result.manifest.model_dump_json(indent=2) if result.manifest else "{}",
+            "run_manifest.json": manifest.model_dump_json(indent=2),
             "web-projection.json": bundle.model_dump_json(indent=2),
         }
         for name, content in files.items():
             (run_dir / name).write_text(content, encoding="utf-8")
+        return manifest
 
 class TechScoutSingleRunExecutor:
     def __init__(
@@ -1675,7 +1870,11 @@ class TechScoutSingleRunExecutor:
         self.queue = queue or InMemoryRunQueue(capacity=queue_capacity)
         self.worker_id = worker_id or f"local-{uuid.uuid4().hex[:12]}"
         self.worker = TechScoutWorker(
-            registry, self.queue, processor or self._process, worker_id=self.worker_id,
+            registry,
+            self.queue,
+            processor or self._process,
+            worker_id=self.worker_id,
+            terminal_failure_processor=self._publish_terminal_failure,
         )
         self.embedded_worker = embedded_worker
         self.shutdown_grace_seconds = shutdown_grace_seconds
@@ -1879,6 +2078,23 @@ class TechScoutSingleRunExecutor:
             progress=bundle.detail.progress,
         )
 
+    def _publish_terminal_failure(
+        self,
+        row: TechScoutRegistryRun,
+        classified: ClassifiedError,
+    ) -> WorkResult:
+        bundle, projection_path = self.engine.publish_failed_projection(
+            row,
+            classified.code,
+            error_kind=classified.kind,
+            retry_count=max(0, row.attempt_count - 1),
+        )
+        return WorkResult(
+            status="failed",
+            projection_path=projection_path,
+            progress=bundle.detail.progress,
+        )
+
     def _execute(self, row: TechScoutRegistryRun) -> None:
         try:
             bundle, projection_path = self.engine.run(row)
@@ -1899,6 +2115,8 @@ class TechScoutSingleRunExecutor:
             self.registry.terminal_techscout(
                 row.id, "failed", projection_path=projection_path,
                 progress=bundle.detail.progress,
+                error_kind=ErrorKind.PERMANENT,
+                error_code="execution_initialization_failed",
                 worker_id=row.worker_id, lease_token=row.lease_token,
                 fencing_token=row.fencing_token,
             )

@@ -27,6 +27,7 @@ from paper_agent.web.techscout_api_models import (
     TechScoutCreateRunRequest,
     TechScoutEvidenceList,
     TechScoutEvidenceProjection,
+    TechScoutIssueProjection,
     TechScoutRecoveryProjection,
     TechScoutReportProjection,
     TechScoutRunDetail,
@@ -223,7 +224,15 @@ class TechScoutProjectionService:
                 attempted=False, outcome="not_needed", attempts_used=0,
             ),
             approval=TechScoutApprovalProjection(required=False, status="not_required"),
-            issues=[],
+            issues=(
+                [TechScoutIssueProjection(
+                    stage="orchestration",
+                    code=row.error_code,
+                    retryable_by_new_run=True,
+                )]
+                if row.error_code is not None
+                else []
+            ),
         )
 
     def decision_context(self, run_id: str) -> DecisionContext:
@@ -307,9 +316,14 @@ class TechScoutProjectionService:
     @staticmethod
     def _summary(row: TechScoutRegistryRun) -> TechScoutRunSummary:
         fast_demo = row.request.mode == "fast"
+        status = (
+            "failed"
+            if row.status in {"timed_out", "dead_letter"}
+            else row.status
+        )
         return TechScoutRunSummary(
             id=row.id,
-            status=row.status,
+            status=status,
             synthetic=fast_demo,
             fixture_name="wave2_fast_demo" if fast_demo else None,
             question=row.request.question,

@@ -144,6 +144,11 @@ def test_wheel_excludes_runtime_outputs_directory(tmp_path: Path) -> None:
     assert any(member.startswith("paper_agent/") for member in members)
     assert "paper-agent = paper_agent.cli:app" in entry_points
     assert "techscout = paper_agent.techscout.cli:app" in entry_points
+    assert "paper_agent/web/static/index.html" in members
+    assert any(
+        member.startswith("paper_agent/web/static/assets/")
+        for member in members
+    )
     assert any(member.endswith("licenses/LICENSE") for member in members)
     assert any(member.endswith("licenses/THIRD_PARTY_NOTICES.md") for member in members)
     assert not any(member.startswith("outputs/") for member in members)

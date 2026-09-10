@@ -88,9 +88,16 @@ def classify_exception(
         return ClassifiedError(ErrorKind.CANCELLED, error.code, False, {})
     transient = isinstance(error, (TimeoutError, ConnectionError))
     retryable = transient and attempt < max_attempts
+    code = (
+        "transient_execution_failure"
+        if retryable
+        else "retry_exhausted"
+        if transient
+        else "unexpected_execution_failure"
+    )
     return ClassifiedError(
         ErrorKind.TRANSIENT if transient else ErrorKind.PERMANENT,
-        "transient_execution_failure" if retryable else "execution_failed",
+        code,
         retryable,
         {"exception_type": type(error).__name__},
     )
