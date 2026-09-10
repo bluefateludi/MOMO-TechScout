@@ -392,7 +392,7 @@ def test_worker_exhaustion_and_unexpected_failure_publish_one_audited_terminal(
         service.report(run_id)
     assert unavailable.value.code == "report_unavailable"
 
-    run_dir = tmp_path / "outputs" / "techscout" / run_id
+    run_dir = tmp_path / "outputs" / (terminal.projection_path or "missing").removesuffix("web-projection.json").rstrip("/")
     assert not (run_dir / "decision-report.json").exists()
     assert not (run_dir / "decision-report.md").exists()
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
