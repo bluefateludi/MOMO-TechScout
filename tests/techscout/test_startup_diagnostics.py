@@ -53,7 +53,7 @@ def test_missing_live_dependencies_are_stable_actionable_diagnostics() -> None:
     by_code = {check.code: check for check in report.checks}
     assert by_code["live_search_unconfigured"].status == "error"
     assert "TAVILY_API_KEY" in by_code["live_search_unconfigured"].action
-    assert by_code["decision_provider_unconfigured"].status == "warning"
+    assert by_code["decision_provider_unconfigured"].status == "error"
     assert by_code["github_unauthenticated"].status == "warning"
     assert by_code["docker_cli_missing"].status == "error"
     assert by_code["docker_install_network_unconfigured"].status == "error"

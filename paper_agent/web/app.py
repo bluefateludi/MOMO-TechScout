@@ -52,6 +52,7 @@ def create_app(
     runner: PipelineRunner | None = None,
     settings_loader: Callable[[], Settings] = load_settings,
     verified_services_factory: StageServicesFactory | None = None,
+    verified_timeout_seconds: int = 300,
     techscout_queue: RunQueue | None = None,
     embedded_techscout_worker: bool = True,
 ) -> FastAPI:
@@ -78,6 +79,7 @@ def create_app(
         registry,
         output_root,
         verified_services_factory=verified_services_factory,
+        verified_timeout_seconds=verified_timeout_seconds,
         queue=techscout_queue,
         queue_capacity=queue_capacity,
         embedded_worker=embedded_techscout_worker,

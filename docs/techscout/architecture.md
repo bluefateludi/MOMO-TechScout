@@ -22,8 +22,9 @@ flowchart TB
     subgraph Tools["Tool boundary"]
         MCP["Local stdio MCP client/server"]
         FAST["Frozen search and synthetic PoC\nFast Demo implementation"]
-        LIVE["Tavily, HTTPS fetch, GitHub read-only, cache\nimplemented adapters; not Web-wired"]
-        DOCKER["Reviewed Docker recipe compiler/runner\nimplemented module; not Fast-Demo-wired"]
+        LIVE["Tavily, HTTPS fetch, GitHub read-only, cache\nVerified-only bounded adapters"]
+        DOCKER["Reviewed Docker recipe compiler/runner\nVerified-only bounded execution"]
+        MODEL["Authorized exact-revision model\ndecision/report draft only"]
     end
 
     subgraph Authority["Durable outputs"]
@@ -36,8 +37,9 @@ flowchart TB
     API --> HAR
     HAR <--> STATE
     HAR --> SKILL --> MCP --> FAST
-    MCP -. future Web integration .-> LIVE
-    MCP -. future Web integration .-> DOCKER
+    HAR --> LIVE
+    HAR --> DOCKER
+    HAR --> MODEL
     HAR <--> CHECK
     HAR --> GATE
     GATE -->|"recoverable within bound"| REC --> HAR
@@ -46,6 +48,13 @@ flowchart TB
 ```
 
 The graph is intentionally bounded rather than an open-ended ReAct loop. Code owns state transitions, tool permissions, budgets, recipe compilation, gate decisions, and terminal status. Stage services own research/planning behavior. Model output, when connected, cannot override these controls.
+
+The real Hero smoke begins at the public Decision Context endpoint and remains
+blocked until Requirements Review and Criteria Confirmation establish Research
+Ready. A provider key by itself cannot enable model execution. The bounded smoke
+authorization supplies the exact model revision and token/cost ceilings; the
+provider response must echo that revision and positive token usage. Missing or
+drifting model authority produces an honest limited result with a sealed Trace.
 
 ## Stage and context boundaries
 

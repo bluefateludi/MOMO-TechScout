@@ -48,7 +48,7 @@ The local Compose quick start publishes the Web service only on `127.0.0.1`, use
 ## Explicit limitations and future work
 
 - The current Web Fast Demo is synthetic even though it uses real orchestration seams.
-- Verified external success requires a Tavily credential, reachable approved sources, Docker, and a dedicated externally enforced PyPI install network.
+- Verified external success requires Tavily and DashScope credentials, reachable approved sources, Docker, a dedicated externally enforced PyPI install network, and a separate bounded authorization that freezes the exact model revision and token/cost ceilings.
 - When any of those are unavailable, `verified` is deliberately limited rather than falsely green.
 - pgvector has no trusted PostgreSQL fixture.
 - No general arbitrary-component installer, remote MCP marketplace, cloud deployment, login, multi-user authorization, or production-scale benchmark exists.

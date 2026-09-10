@@ -19,7 +19,11 @@ from typing import Callable, Protocol
 
 from pydantic import Field
 
-from paper_agent.generation import GenerationMessage, GenerationProvider
+from paper_agent.generation import (
+    GenerationMessage,
+    GenerationProvider,
+    GenerationProviderError,
+)
 from paper_agent.modeling import StrictModel
 from paper_agent.techscout.errors import Failure, FailureCode, FailureStage, RecoveryAction
 from paper_agent.techscout.harness import (
@@ -456,10 +460,6 @@ class DeterministicStageServices:
             (item.candidate_id, item.constraint): item.evidence_id
             for item in self.evidence
         }
-        explicit_limited = self.scenario in {
-            "cached_degradation", "verified_limited", "research_only",
-            "docker_unavailable", "research_unavailable",
-        }
         default_summary = (
             "No safe winner is claimed because the frozen provider cache was used."
             if self.scenario == "cached_degradation"
@@ -483,6 +483,11 @@ class DeterministicStageServices:
             state, passed_ids=passed_ids, default_candidate=candidate,
             default_summary=default_summary,
         )
+        model_limitation = getattr(self, "model_authority_limitation", None)
+        explicit_limited = self.scenario in {
+            "cached_degradation", "verified_limited", "research_only",
+            "docker_unavailable", "research_unavailable",
+        } or model_limitation is not None
         passed = candidate.candidate_id in passed_ids
         limited = explicit_limited or not passed
         report = DecisionReport(
@@ -518,6 +523,8 @@ class DeterministicStageServices:
                         if self.scenario == "research_unavailable"
                         else "The reviewed PoC failed after bounded recovery."
                         if self.scenario == "verification_failed"
+                        else "Exact model revision and provider token authority are unavailable."
+                        if model_limitation is not None
                         else "The PoC requires bounded recovery."
                         if limited
                         else None
@@ -539,6 +546,8 @@ class DeterministicStageServices:
                 if self.scenario == "research_unavailable"
                 else ("verification_failed",)
                 if self.scenario == "verification_failed"
+                else (model_limitation,)
+                if model_limitation is not None
                 else ()
             ),
         )
@@ -720,6 +729,8 @@ class VerifiedStageServices:
         poc_service: RealPocService,
         generation_provider: GenerationProvider | None = None,
         generation_timeout_seconds: float = 60.0,
+        model_authority_required: bool = False,
+        exact_model_revision: str | None = None,
         **kwargs,
     ) -> None:
         self.acquisition_states: dict[str, AcquisitionState] = {}
@@ -745,6 +756,9 @@ class VerifiedStageServices:
         self._poc_service = poc_service
         self._generation_provider = generation_provider
         self._generation_timeout_seconds = generation_timeout_seconds
+        self._model_authority_required = model_authority_required
+        self._exact_model_revision = exact_model_revision
+        self.model_authority_limitation: str | None = None
         self.model_prompt_tokens: int | None = None
         self.model_completion_tokens: int | None = None
         self.model_total_tokens: int | None = None
@@ -1068,6 +1082,14 @@ class VerifiedStageServices:
         default_summary: str,
     ) -> tuple[Candidate, str, int]:
         if self._generation_provider is None:
+            if self._model_authority_required and self.scenario == "verified" and passed_ids:
+                self.model_authority_limitation = "model_authority_unavailable"
+                default_summary = (
+                    "No safe winner is claimed because authorized exact-revision "
+                    "model authority is unavailable."
+                )
+            return default_candidate, default_summary, 0
+        if self.scenario != "verified" or not passed_ids:
             return default_candidate, default_summary, 0
         bounded_facts = {
             "question": state.request.question,
@@ -1080,31 +1102,64 @@ class VerifiedStageServices:
                 item.candidate_id: item.status.value for item in self.poc_results
             },
         }
-        generated = self._generation_provider.generate_structured(
-            operation="techscout_decision_report",
-            messages=(
-                GenerationMessage(
-                    role="system",
-                    content=(
-                        "You draft a bounded TechScout decision. Choose only from "
-                        "eligible_poc_passed_candidate_ids. If that list is empty, "
-                        "preferred_candidate_id must be null and the summary must "
-                        "state that there is no safe winner. Never request tools, "
-                        "invent evidence, or extend Local results to Cloud, HA, or clusters."
+        try:
+            generated = self._generation_provider.generate_structured(
+                operation="techscout_decision_report",
+                messages=(
+                    GenerationMessage(
+                        role="system",
+                        content=(
+                            "You draft a bounded TechScout decision. Choose only from "
+                            "eligible_poc_passed_candidate_ids. If that list is empty, "
+                            "preferred_candidate_id must be null and the summary must "
+                            "state that there is no safe winner. Never request tools, "
+                            "invent evidence, or extend Local results to Cloud, HA, or clusters."
+                        ),
+                    ),
+                    GenerationMessage(
+                        role="user",
+                        content=json.dumps(bounded_facts, sort_keys=True),
                     ),
                 ),
-                GenerationMessage(
-                    role="user",
-                    content=json.dumps(bounded_facts, sort_keys=True),
-                ),
-            ),
-            response_schema=ModelDecisionDraft,
-            timeout=self._generation_timeout_seconds,
-        )
+                response_schema=ModelDecisionDraft,
+                timeout=self._generation_timeout_seconds,
+            )
+        except GenerationProviderError as error:
+            self.model_prompt_tokens = error.metadata.prompt_tokens
+            self.model_completion_tokens = error.metadata.completion_tokens
+            self.model_total_tokens = error.metadata.total_tokens
+            self.model_authority_limitation = "model_authority_unavailable"
+            return (
+                default_candidate,
+                "No safe winner is claimed because the authorized model provider "
+                "did not produce decision/report authority.",
+                error.metadata.total_tokens or 0,
+            )
         self.model_prompt_tokens = generated.prompt_tokens
         self.model_completion_tokens = generated.completion_tokens
         self.model_total_tokens = generated.total_tokens
         self.model_revision = generated.model
+        if self._model_authority_required:
+            if (
+                self._exact_model_revision is None
+                or generated.model != self._exact_model_revision
+            ):
+                self.model_authority_limitation = "model_revision_unverified"
+            elif (
+                generated.prompt_tokens is None
+                or generated.completion_tokens is None
+                or generated.total_tokens is None
+                or generated.prompt_tokens + generated.completion_tokens <= 0
+                or generated.total_tokens <= 0
+            ):
+                self.model_authority_limitation = "provider_usage_unverified"
+            if self.model_authority_limitation is not None:
+                return (
+                    default_candidate,
+                    "No safe winner is claimed because exact model revision and "
+                    "non-zero provider token usage were not established.",
+                    generated.total_tokens or 0,
+                )
         preferred = next(
             (
                 item
@@ -1245,7 +1300,9 @@ class TechScoutRunEngine:
             status="ok" if result.state.terminal_status is not TerminalStatus.FAILED else "error",
             context={
                 "model_revision": getattr(services, "model_revision", None),
-                "provider_usage_reported": getattr(services, "model_total_tokens", None) is not None,
+                "provider_usage_reported": (
+                    (getattr(services, "model_total_tokens", None) or 0) > 0
+                ),
             },
         )
         trace.seal()
@@ -1576,6 +1633,7 @@ class TechScoutSingleRunExecutor:
         queue_failure_limit: int = 5,
         queue_backoff_seconds: float = 0.1,
         queue_backoff_max_seconds: float = 2.0,
+        verified_timeout_seconds: int = 300,
     ) -> None:
         if queue_failure_limit < 1:
             raise ValueError("queue_failure_limit must be positive")
@@ -1584,6 +1642,7 @@ class TechScoutSingleRunExecutor:
             output_root,
             registry,
             verified_services_factory=verified_services_factory,
+            verified_timeout_seconds=verified_timeout_seconds,
         )
         self.available = False
         self.queue = queue or InMemoryRunQueue(capacity=queue_capacity)

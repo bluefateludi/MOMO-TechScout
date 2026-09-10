@@ -39,6 +39,8 @@ def make_verified_services_factory(
     state_root: Path,
     settings_loader: Callable[[], Settings],
     generation_max_tokens: int = 1_024,
+    model_call_authorized: bool = False,
+    exact_model_revision: str | None = None,
 ) -> StageServicesFactory:
     """Build live dependencies only when a verified run is actually claimed."""
 
@@ -57,7 +59,12 @@ def make_verified_services_factory(
                 transport=DashScopeChatTransport(client),
                 max_tokens=generation_max_tokens,
             )
-            if settings.dashscope_api_key
+            if (
+                model_call_authorized
+                and exact_model_revision is not None
+                and settings.dashscope_api_key
+                and settings.dashscope_generation_model == exact_model_revision
+            )
             else None
         )
         cache = ContentAddressedCache(cache_root)
@@ -117,6 +124,8 @@ def make_verified_services_factory(
             poc_service=poc,
             generation_provider=generation_provider,
             generation_timeout_seconds=settings.dashscope_generation_timeout_seconds,
+            model_authority_required=True,
+            exact_model_revision=exact_model_revision,
             **kwargs,
         )
 

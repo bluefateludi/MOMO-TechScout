@@ -112,12 +112,15 @@ def diagnose_verified_startup(
         _credential_check(
             configured=bool(settings.dashscope_api_key),
             component="decision_provider",
-            missing_status="warning",
+            missing_status="error",
             configured_code="decision_provider_configured",
             missing_code="decision_provider_unconfigured",
-            configured_message="Bounded model-assisted decision drafting is configured.",
-            missing_message="Model-assisted drafting is disabled; deterministic authority remains available.",
-            action="Set DASHSCOPE_API_KEY to enable bounded model-assisted drafting.",
+            configured_message="The bounded decision/report provider credential is configured.",
+            missing_message="Verified model-backed decision/report authority is unavailable.",
+            action=(
+                "Set DASHSCOPE_API_KEY, then use the separately authorized bounded "
+                "Hero smoke preflight with an exact model revision."
+            ),
         ),
         _credential_check(
             configured=bool(settings.github_token),

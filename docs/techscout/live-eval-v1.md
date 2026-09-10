@@ -130,7 +130,9 @@ clean baseline commit, real Docker daemon, dedicated allowlisted install
 network, exact reviewed image ID, bounded timeouts, and a new output path that
 cannot overlap the synthetic authority. `--execute-smoke` is the only option
 that proceeds to the real first-case/first-repetition smoke after preflight. It
-then requires the provider response to report the exact model revision and
+submits the case through the public Decision Context API, records Requirements
+Review and Criteria Confirmation, and waits for Research Ready. It then
+requires the provider response to report the exact model revision and
 non-zero token usage, recomputes cost from the frozen pricing snapshot, applies
 the existing typed report and deterministic Validation Gate, and seals a
 distinct `bounded_live_smoke` authority.
