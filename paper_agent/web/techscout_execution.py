@@ -1748,14 +1748,11 @@ class TechScoutRunEngine:
             "evidence.jsonl": "\n".join(item.model_dump_json() for item in services.evidence) + "\n",
             "poc-plan.json": json.dumps([item.model_dump(mode="json") for item in services.poc_plans], indent=2),
             "poc-results.json": json.dumps([item.model_dump(mode="json") for item in services.poc_history], indent=2),
+            "decision-report.json": result.report.model_dump_json(indent=2) if result.report else "{}",
+            "decision-report.md": f"# TechScout decision\n\n{result.report.summary if result.report else 'Run failed safely.'}\n",
             "run_manifest.json": manifest.model_dump_json(indent=2),
             "web-projection.json": bundle.model_dump_json(indent=2),
         }
-        if result.report is not None:
-            files.update({
-                "decision-report.json": result.report.model_dump_json(indent=2),
-                "decision-report.md": f"# TechScout decision\n\n{result.report.summary}\n",
-            })
         for name, content in files.items():
             (run_dir / name).write_text(content, encoding="utf-8")
         return manifest

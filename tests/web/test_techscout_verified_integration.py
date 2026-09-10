@@ -711,8 +711,9 @@ def test_one_recovery_transition_reruns_only_one_failed_candidate(tmp_path: Path
     assert "docker_unavailable" not in str(detail)
     assert "limitations" not in report
     artifact_root = tmp_path / "outputs" / "techscout" / detail["id"]
-    assert not (artifact_root / "decision-report.json").exists()
-    assert not (artifact_root / "decision-report.md").exists()
+    assert (artifact_root / "decision-report.json").read_text(
+        encoding="utf-8"
+    ) == "{}"
     manifest = json.loads(
         (artifact_root / "run_manifest.json").read_text(encoding="utf-8")
     )
