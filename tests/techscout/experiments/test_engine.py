@@ -18,6 +18,7 @@ from paper_agent.techscout.experiments import (
     IdempotencyConflictError,
     InvalidExecutionSealError,
     SandboxExperimentAdapter,
+    UnsupportedExperimentRecipeError,
 )
 from paper_agent.techscout.sandbox.runner import FakeSandboxRunner
 from paper_agent.techscout.sandbox.types import (
@@ -154,6 +155,67 @@ def test_research_only_recipe_never_crosses_runner_seam_and_is_idempotent(
     assert first == second
     assert first.result.terminal_status is ExecutionTerminalStatus.RESEARCH_ONLY
     assert first.result.check_results == ()
+    assert runner.calls == []
+
+
+def test_unreviewed_recipe_is_denied_with_sealed_audit_before_runner(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    request = _request(
+        recipe_id="recipe:attacker-controlled@1",
+        idempotency_key="idempotency:unreviewed-recipe",
+    )
+    runner = FakeSandboxRunner()
+
+    with pytest.raises(
+        UnsupportedExperimentRecipeError,
+        match="not reviewed and cannot execute",
+    ):
+        _engine(runner).execute(request, run_workspace=workspace)
+
+    assert runner.calls == []
+    audit_path = next(
+        workspace.glob("experiment-executions/*/denial.json")
+    )
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    original_audit = audit_path.read_bytes()
+    denial = payload["denial"]
+    assert denial == {
+        "decision": "denied",
+        "execution_id": request.execution_id,
+        "failure_code": "poc_recipe_unsupported",
+        "reason": "Recipe is not reviewed and cannot execute.",
+        "recipe_id": request.recipe_id,
+        "request_sha256": hashlib.sha256(
+            json.dumps(
+                request.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "runner_invoked": False,
+        "schema_version": "1.0",
+        "subject_id": request.subject_id,
+    }
+    assert payload["denial_sha256"] == hashlib.sha256(
+        json.dumps(
+            denial,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(UnsupportedExperimentRecipeError):
+        _engine(runner).execute(request, run_workspace=workspace)
+    assert audit_path.read_bytes() == original_audit
+    with pytest.raises(IdempotencyConflictError, match="denied for a different request"):
+        _engine(runner).execute(
+            request.model_copy(update={"subject_id": "subject:different"}),
+            run_workspace=workspace,
+        )
     assert runner.calls == []
 
 
@@ -355,6 +417,9 @@ def test_resource_budget_mismatch_and_cleanup_failure_are_sealed(
     resource_result = _engine(runner).execute(mismatched, run_workspace=workspace)
     assert resource_result.result.terminal_status is ExecutionTerminalStatus.FAILED
     assert resource_result.result.failure.code is FailureCode.UNSAFE_REQUEST
+    assert resource_result.result.terminal_reason == (
+        "Experiment policy denied an unauthorized network, filesystem, or resource request."
+    )
 
     cleanup_request = _request(idempotency_key="idempotency:cleanup-failure")
     cleanup_runner = FakeSandboxRunner()

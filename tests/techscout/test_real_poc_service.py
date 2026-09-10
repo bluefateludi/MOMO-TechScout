@@ -448,3 +448,21 @@ def test_adapter_rejects_candidate_recipe_mismatch_without_runner_call(
     assert output.status == "research_only"
     assert output.failure_code is FailureCode.POC_RECIPE_UNSUPPORTED
     assert runner.calls == []
+
+
+def test_adapter_rejects_unknown_recipe_without_runner_call(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    runner = FakeSandboxRunner()
+    adapter = RealPocAdapter(RealPocService(runner), run_workspace=workspace)
+
+    output = adapter.run_smoke_test(
+        SmokeTestInput(
+            candidate_id="candidate:chroma",
+            recipe_id="recipe:attacker-controlled@1",
+            checks=("import",),
+        )
+    )
+
+    assert output.status == "research_only"
+    assert output.failure_code is FailureCode.POC_RECIPE_UNSUPPORTED
+    assert runner.calls == []

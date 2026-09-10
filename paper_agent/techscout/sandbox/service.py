@@ -449,11 +449,13 @@ class RealPocAdapter:
         self,
         request: SmokeTestInput,
     ) -> SmokeTestOutput:
+        trusted = False
         try:
             recipe = self._registry.get(request.recipe_id)
             if request.candidate_id in recipe.candidate_ids:
                 name = recipe.package_name
                 package_name: str | None = recipe.package_name
+                trusted = True
             else:
                 name = "unsupported-candidate"
                 package_name = None
@@ -471,7 +473,7 @@ class RealPocAdapter:
             poc_plan_id=f"poc-plan:real-{identity}",
             candidate_id=request.candidate_id,
             recipe_id=request.recipe_id,
-            trusted=True,
+            trusted=trusted,
             checks=request.checks,
         )
         candidate = Candidate(
