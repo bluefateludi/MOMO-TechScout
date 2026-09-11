@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -38,7 +38,7 @@ from paper_agent.web.techscout_execution import TechScoutRunEngine
 from paper_agent.web.verified_composition import make_verified_services_factory
 
 
-NOW = datetime(2026, 8, 12, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc) - timedelta(hours=1)
 
 
 def _provenance(cache: bool = False) -> SourceProvenance:

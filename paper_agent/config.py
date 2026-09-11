@@ -32,6 +32,7 @@ class Settings:
     github_token: str | None = field(default=None, repr=False)
     techscout_docker_install_network: str | None = None
     techscout_docker_egress_allowlist_enforced: bool = False
+    techscout_docker_storage_quota_supported: bool = True
     bailian_region: str = "beijing"
     bailian_embedding_model: str = "text-embedding-v4"
     dashscope_generation_model: str = "qwen3.7-plus"
@@ -202,6 +203,11 @@ def load_settings() -> Settings:
             "TECHSCOUT_DOCKER_EGRESS_ALLOWLIST_ENFORCED",
             _setting("TECHSCOUT_DOCKER_EGRESS_ALLOWLIST_ENFORCED", dotenv),
             False,
+        ),
+        techscout_docker_storage_quota_supported=_strict_bool(
+            "TECHSCOUT_DOCKER_STORAGE_QUOTA_SUPPORTED",
+            _setting("TECHSCOUT_DOCKER_STORAGE_QUOTA_SUPPORTED", dotenv),
+            True,
         ),
         bailian_region=_string_with_default(
             _setting("BAILIAN_REGION", dotenv), "beijing"
