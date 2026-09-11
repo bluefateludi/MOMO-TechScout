@@ -40,11 +40,13 @@ class DockerCliRunner:
         *,
         docker_executable: str = "docker",
         install_network: InstallNetworkPolicy | None = None,
+        storage_quota_supported: bool | None = None,
     ) -> None:
         self._workspace_root = workspace_root.resolve(strict=True)
         self._limits = limits or SandboxLimits()
         self._docker_executable = docker_executable
         self._install_network = install_network
+        self._storage_quota_supported = storage_quota_supported
 
     def docker_argv(
         self,
@@ -79,24 +81,31 @@ class DockerCliRunner:
             self._limits.memory,
             "--pids-limit",
             str(self._limits.pids),
-            "--storage-opt",
-            f"size={self._limits.disk}",
-            "--network",
-            network,
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--tmpfs",
-            f"/tmp:rw,noexec,nosuid,size={self._limits.tmpfs}",
-            "--workdir",
-            "/workspace",
-            "--mount",
-            f"type=bind,source={workspace},target=/workspace",
-            "--env",
-            "HOME=/tmp",
         ]
+        if self._storage_quota_supported is not False:
+            # ``--storage-opt size=`` requires overlay2 over xfs with pquota;
+            # hosts that cannot enforce it (e.g. Docker Desktop on Windows)
+            # keep every other bound and must not lose the whole PoC stage.
+            argv.extend(("--storage-opt", f"size={self._limits.disk}"))
+        argv.extend(
+            [
+                "--network",
+                network,
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--tmpfs",
+                f"/tmp:rw,noexec,nosuid,size={self._limits.tmpfs}",
+                "--workdir",
+                "/workspace",
+                "--mount",
+                f"type=bind,source={workspace},target=/workspace",
+                "--env",
+                "HOME=/tmp",
+            ]
+        )
         if cidfile is not None:
             argv.extend(("--cidfile", str(cidfile)))
         argv.extend((command.image, *command.argv))

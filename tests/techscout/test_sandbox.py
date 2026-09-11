@@ -136,6 +136,19 @@ def test_docker_argv_applies_resource_mount_and_network_boundaries(tmp_path: Pat
         for fragment in ("API_KEY", "PASSWORD", "SECRET", "TOKEN")
     )
 
+    quotaless = DockerCliRunner(
+        tmp_path,
+        limits=SandboxLimits(),
+        storage_quota_supported=False,
+    )
+    quotaless_argv = quotaless.docker_argv(command, run_workspace)
+    assert "--storage-opt" not in quotaless_argv
+    remaining_bounds = {
+        "--cpus", "--memory", "--pids-limit", "--read-only", "--cap-drop",
+        "--security-opt", "--tmpfs", "--network", "--mount",
+    }
+    assert remaining_bounds.issubset(set(quotaless_argv))
+
     install = PocCompiler().compile(_plan(), _candidate(), PocStage.INSTALL)
     with pytest.raises(PermissionError, match="destination-allowlisted"):
         runner.docker_argv(install, run_workspace)

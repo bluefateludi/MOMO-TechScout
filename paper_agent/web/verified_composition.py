@@ -113,6 +113,9 @@ def make_verified_services_factory(
                 workspace_root,
                 limits=SandboxLimits(timeout_seconds=40),
                 install_network=install_network,
+                storage_quota_supported=(
+                    settings.techscout_docker_storage_quota_supported
+                ),
             ),
             secrets=tuple(
                 value for value in (settings.tavily_api_key, settings.github_token) if value
