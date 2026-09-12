@@ -187,7 +187,7 @@ def test_runner_invokes_subprocess_with_timeout_and_no_shell(monkeypatch, tmp_pa
     assert captured["kwargs"] == {
         "capture_output": True,
         "text": True,
-        "timeout": 60.0,
+        "timeout": 300.0,
         "check": False,
     }
     assert isinstance(captured["argv"], list)

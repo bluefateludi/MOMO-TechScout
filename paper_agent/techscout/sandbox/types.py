@@ -56,8 +56,10 @@ class SandboxLimits(TechScoutModel):
     memory: MemoryLimit = "512m"
     pids: int = Field(default=64, ge=16, le=128)
     disk: MemoryLimit = "256m"
-    tmpfs: MemoryLimit = "64m"
-    timeout_seconds: float = Field(default=60.0, gt=0, le=120)
+    # The pinned Wave 1 candidates pull ~80 wheels; a tmpfs that cannot hold
+    # them turns every install into a bounded but unrecoverable ENOSPC exit.
+    tmpfs: MemoryLimit = "2g"
+    timeout_seconds: float = Field(default=300.0, gt=0, le=300)
     output_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
 
 
