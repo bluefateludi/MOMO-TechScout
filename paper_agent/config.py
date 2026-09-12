@@ -34,6 +34,7 @@ class Settings:
     techscout_docker_egress_allowlist_enforced: bool = False
     techscout_docker_storage_quota_supported: bool = True
     techscout_docker_stage_timeout_seconds: float = 240.0
+    techscout_live_provider_timeout_seconds: float = 15.0
     bailian_region: str = "beijing"
     bailian_embedding_model: str = "text-embedding-v4"
     dashscope_generation_model: str = "qwen3.7-plus"
@@ -214,6 +215,11 @@ def load_settings() -> Settings:
             "TECHSCOUT_DOCKER_STAGE_TIMEOUT_SECONDS",
             _setting("TECHSCOUT_DOCKER_STAGE_TIMEOUT_SECONDS", dotenv),
             240.0,
+        ),
+        techscout_live_provider_timeout_seconds=_positive_float(
+            "TECHSCOUT_LIVE_PROVIDER_TIMEOUT_SECONDS",
+            _setting("TECHSCOUT_LIVE_PROVIDER_TIMEOUT_SECONDS", dotenv),
+            15.0,
         ),
         bailian_region=_string_with_default(
             _setting("BAILIAN_REGION", dotenv), "beijing"
