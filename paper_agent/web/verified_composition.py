@@ -68,20 +68,27 @@ def make_verified_services_factory(
             else None
         )
         cache = ContentAddressedCache(cache_root)
+        # Real provider latency (Tavily first-byte on a consumer link) can
+        # exceed 4s; the adapter timeout is configurable and the default keeps
+        # the run deadline reservation honest.
+        provider_timeout = settings.techscout_live_provider_timeout_seconds
         live_search = (
             TavilySearchAdapter(
-                client=client, api_key=settings.tavily_api_key, timeout_seconds=4
+                client=client, api_key=settings.tavily_api_key,
+                timeout_seconds=provider_timeout,
             )
             if settings.tavily_api_key
             else _UnavailableSearch()
         )
         search = CachedSearchAdapter(delegate=live_search, cache=cache)
         fetch = CachedFetchAdapter(
-            delegate=HttpxFetchAdapter(client=client, timeout_seconds=4), cache=cache
+            delegate=HttpxFetchAdapter(client=client, timeout_seconds=provider_timeout),
+            cache=cache,
         )
         github = CachedGitHubAdapter(
             delegate=GitHubReadOnlyAdapter(
-                client=client, token=settings.github_token, timeout_seconds=4
+                client=client, token=settings.github_token,
+                timeout_seconds=provider_timeout,
             ),
             cache=cache,
         )
