@@ -111,7 +111,9 @@ def make_verified_services_factory(
         poc = RealPocService(
             DockerCliRunner(
                 workspace_root,
-                limits=SandboxLimits(timeout_seconds=40),
+                limits=SandboxLimits(
+                    timeout_seconds=settings.techscout_docker_stage_timeout_seconds
+                ),
                 install_network=install_network,
                 storage_quota_supported=(
                     settings.techscout_docker_storage_quota_supported

@@ -819,6 +819,12 @@ class VerifiedStageServices:
         self._poc_service = poc_service
         self._generation_provider = generation_provider
         self._generation_timeout_seconds = generation_timeout_seconds
+        # Per Docker stage bound. The sandbox timeout (and thus the deadline
+        # reservation) is driven by the configured stage timeout; local fake
+        # PoCs keep the historical tight reservation so unit runs stay fast.
+        self._stage_budget_seconds = max(
+            30.0, min(150.0, 1.5 * generation_timeout_seconds)
+        )
         self._model_authority_required = model_authority_required
         self._exact_model_revision = exact_model_revision
         self.model_authority_limitation: str | None = None
@@ -1040,7 +1046,9 @@ class VerifiedStageServices:
                 )
                 continue
             # A full recipe can block for two independently bounded Docker stages.
-            self._require_remaining_seconds(90)
+            self._require_remaining_seconds(
+                2 * self._stage_budget_seconds * 1.25
+            )
             result = self._poc_service.execute(
                 plan,
                 by_id[plan.candidate_id],
@@ -1097,7 +1105,9 @@ class VerifiedStageServices:
             if stage is None:
                 recovered.append(result)
                 continue
-            self._require_remaining_seconds(45)
+            self._require_remaining_seconds(
+                self._stage_budget_seconds * 1.25
+            )
             attempt = self._poc_service.rerun_stage(
                 plan_by_id[result.candidate_id],
                 by_id[result.candidate_id],
