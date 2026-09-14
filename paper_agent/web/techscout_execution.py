@@ -928,6 +928,20 @@ class VerifiedStageServices:
             tool_calls=len(state.request.candidates),
         )
 
+    # The preregistered Hero Case request states verification eligibility as a
+    # hard constraint ("Only a verified eligible candidate may be recommended.").
+    # That judgment is owned by the deterministic PoC/gate pipeline, not by text
+    # extraction: release notes never restate the harness's own policy, so a
+    # retrieved-fact search for it can only ever yield UNKNOWN.
+    VERIFICATION_CONSTRAINT_MARKERS = (
+        "verified eligible candidate",
+        "may be recommended",
+    )
+
+    def _is_verification_constraint(self, constraint: str) -> bool:
+        casefolded = constraint.casefold()
+        return all(marker in casefolded for marker in self.VERIFICATION_CONSTRAINT_MARKERS)
+
     def _record_constraint_evidence(
         self,
         *,
@@ -938,6 +952,9 @@ class VerifiedStageServices:
         statuses: dict[str, ConstraintStatus] = {}
         template_query = delivery.research.query_plan.queries[0]
         for constraint in constraints:
+            if self._is_verification_constraint(constraint):
+                statuses[constraint] = ConstraintStatus.UNKNOWN
+                continue
             stances: set[FactStance] = set()
             seen: set[tuple[str, str, FactStance]] = set()
             query = template_query.model_copy(update={"question": constraint})
@@ -1178,7 +1195,73 @@ class VerifiedStageServices:
         except (OSError, KeyError, IndexError, ValueError, json.JSONDecodeError):
             return PocStage.TEST
 
+    def _record_verification_evidence(self, state: ResearchState) -> None:
+        """PoC-driven judgment for the preregistered verification constraint.
+
+        The gate requires evidence for every hard constraint of a recommended
+        candidate, so a passed reviewed PoC is recorded as one local-measurement
+        evidence linked to the candidate's authoritative source. Fail-closed:
+        without a passed reviewed PoC the constraint stays UNKNOWN and no safe
+        winner is claimed.
+        """
+        verification_constraints = tuple(
+            constraint
+            for constraint in state.request.hard_constraints
+            if self._is_verification_constraint(constraint)
+        )
+        if not verification_constraints:
+            return
+        by_id = {item.candidate_id: item for item in state.request.candidates}
+        plan_by_id = {item.poc_plan_id: item for item in self.poc_plans}
+        for result in self.poc_results:
+            if result.status is not PocStatus.PASSED or result.candidate_id not in by_id:
+                continue
+            plan = plan_by_id.get(result.poc_plan_id)
+            if (
+                plan is None
+                or plan.recipe_id not in self.recipe_registry.trusted_recipe_ids
+            ):
+                continue
+            source = next(
+                (
+                    item
+                    for item in self.sources
+                    if item.candidate_id == result.candidate_id
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            candidate = by_id[result.candidate_id]
+            for constraint in verification_constraints:
+                if any(
+                    item.candidate_id == result.candidate_id
+                    and item.constraint == constraint
+                    for item in self.evidence
+                ):
+                    continue
+                self.evidence.append(
+                    CandidateEvidence(
+                        evidence_id=(
+                            f"evidence:{_slug(candidate.name)}:verification"
+                        ),
+                        candidate_id=result.candidate_id,
+                        constraint=constraint,
+                        claim=(
+                            "The reviewed Docker PoC installed and verified "
+                            f"{result.resolved_version} covering {', '.join(plan.checks)}."
+                        ),
+                        source_ids=(source.source_id,),
+                        chunk_ids=(),
+                        kind=EvidenceKind.LOCAL_MEASUREMENT,
+                    )
+                )
+            self.constraint_statuses.setdefault(result.candidate_id, {}).update(
+                {constraint: ConstraintStatus.SATISFIED for constraint in verification_constraints}
+            )
+
     def _validate(self, state: ResearchState) -> StageResult:
+        self._record_verification_evidence(state)
         poc_by_candidate = {item.candidate_id: item for item in self.poc_results}
         for candidate in state.request.candidates:
             context = self._candidate_context(candidate.candidate_id)
