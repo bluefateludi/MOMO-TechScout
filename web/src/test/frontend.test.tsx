@@ -161,6 +161,7 @@ describe("fixture-backed TechScout views", () => {
   });
 
   it("renders live, cached, PoC verified, research-only, and limited authority explicitly", async () => {
+    localStorage.setItem("momo-techscout-locale:v1", "en");
     vi.mocked(techScoutApi.getReport).mockResolvedValue({ data: {
       ...techScoutReport,
       synthetic: false,
@@ -183,7 +184,8 @@ describe("fixture-backed TechScout views", () => {
     } });
     render(<MemoryRouter initialEntries={[`/runs/${TECHSCOUT_FIXTURE_ID}/evidence/${techScoutEvidence[0].evidence_id}`]}><Routes><Route path="/runs/:id/evidence/:evidenceId" element={<EvidencePage/>}/></Routes></MemoryRouter>);
     expect(await screen.findByRole("note")).toHaveTextContent("Cached evidence");
-    expect(screen.getByText("Cached")).toBeInTheDocument();
+    expect(screen.getByText("cache")).toBeInTheDocument();
+    expect(screen.getByText("official documentation")).toBeInTheDocument();
   });
 });
 
