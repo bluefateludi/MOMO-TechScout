@@ -9,7 +9,7 @@
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](web/package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](web/package.json)
 [![Node ^20.19 \|\| >=22.12](https://img.shields.io/badge/Node.js-%5E20.19%20%7C%7C%20%3E%3D22.12-339933?logo=node.js&logoColor=white)](web/package.json)
-[![CI](https://github.com/bluefateludi/MOMO-Scholar/actions/workflows/ci.yml/badge.svg)](https://github.com/bluefateludi/MOMO-Scholar/actions/workflows/ci.yml)
+[![CI](https://github.com/bluefateludi/MOMO-TechScout/actions/workflows/ci.yml/badge.svg)](https://github.com/bluefateludi/MOMO-TechScout/actions/workflows/ci.yml)
 
 **证据落地的开源组件调研与验证 Agent（面向 Python AI 开发者）**
 **An evidence-grounded research & verification agent for Python AI developers**
